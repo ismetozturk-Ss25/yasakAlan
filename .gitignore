@@ -1,0 +1,17 @@
+# Executables
+*.exe
+
+# Output files
+*.txt
+*.log
+
+# Python cache
+__pycache__/
+*.pyc
+tempCodeRunnerFile.py
+
+# Generated images (keep plot scripts, not output)
+path_plot.png
+
+# Figures directory (generated)
+figure/

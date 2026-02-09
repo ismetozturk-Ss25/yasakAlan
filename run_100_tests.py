@@ -90,11 +90,11 @@ def generate_zones(
 
 def zones_to_c(zones: list, var_name: str = "in") -> str:
     lines = []
-    lines.append(f"    {var_name}.forbidden_count = {len(zones)};")
     for i, z in enumerate(zones):
         lines.append(f"/* Zone {i:02d} */")
-        lines.append(f"{var_name}.forbidden[{i}].az_min = {z.az_min:.1f}f; {var_name}.forbidden[{i}].az_max = {z.az_max:.1f}f;")
-        lines.append(f"{var_name}.forbidden[{i}].el_min = {z.el_min:.1f}f; {var_name}.forbidden[{i}].el_max = {z.el_max:.1f}f;")
+        lines.append(f"{var_name}.forbidden[{i}].valid = 1;")
+        lines.append(f"{var_name}.forbidden[{i}].az_min = {z.az_min:.1f}f; {var_name}.forbidden[{i}].el_min = {z.el_min:.1f}f;")
+        lines.append(f"{var_name}.forbidden[{i}].az_max = {z.az_max:.1f}f; {var_name}.forbidden[{i}].el_max = {z.el_max:.1f}f;")
     return "\n".join(lines)
 
 def generate_start_target(zones: list, envelope=(-180, 180, -30, 60)):
@@ -130,30 +130,27 @@ def generate_start_target(zones: list, envelope=(-180, 180, -30, 60)):
 # ============================================================
 
 def update_runner_main(zones: list, start: tuple, target: tuple, filepath: str):
-    """Update runner_main.c with new zones and start/target."""
+    """Update runner_main.c with new zones and start/target.
+
+    Replaces everything between 'set_envelope(&in);' and 'return run_sim('
+    with new start/target and zone definitions.
+    """
     with open(filepath, 'r', encoding='utf-8') as f:
         content = f.read()
 
-    # Build new zone code
+    # Build replacement block
     zone_code = zones_to_c(zones, "in")
+    replacement = (
+        f"    in.az_now = {start[0]:.2f}f;  in.el_now = {start[1]:.2f}f;\n"
+        f"    in.az_cmd = {target[0]:.2f}f;  in.el_cmd = {target[1]:.2f}f;\n"
+        f"\n"
+        f"{zone_code}\n"
+        f"\n"
+    )
 
-    # Build new start/target
-    start_target = f"    in.az_now = {start[0]:.2f}f;  in.el_now = {start[1]:.2f}f;\n"
-    start_target += f"    in.az_cmd = {target[0]:.2f}f;  in.el_cmd = {target[1]:.2f}f;"
-
-    # Pattern to match and replace the zones section
-    # Looking for: in.az_now = ...; in.el_now = ...;
-    #              in.az_cmd = ...; in.el_cmd = ...;
-    #              in.forbidden_count = ...;
-    #              /* Zone 00 */ ... /* Zone 15 */ ...
-
-    # Replace start/target
-    pattern_start = r'in\.az_now\s*=\s*[^;]+;\s*in\.el_now\s*=\s*[^;]+;\s*\n\s*in\.az_cmd\s*=\s*[^;]+;\s*in\.el_cmd\s*=\s*[^;]+;'
-    content = re.sub(pattern_start, start_target, content)
-
-    # Replace zones - find the block from forbidden_count to last Zone
-    pattern_zones = r'in\.forbidden_count\s*=\s*\d+;.*?/\* Zone 15 \*/\s*\n[^\n]+\n[^\n]+'
-    content = re.sub(pattern_zones, zone_code, content, flags=re.DOTALL)
+    # Replace everything between the two markers
+    pattern = r'(set_envelope\(&in\);\s*\n).*?(\s*return run_sim\()'
+    content = re.sub(pattern, r'\1' + replacement + r'\2', content, flags=re.DOTALL)
 
     with open(filepath, 'w', encoding='utf-8') as f:
         f.write(content)
@@ -167,7 +164,8 @@ def build_and_run(workdir: str) -> bool:
     # Build
     result = subprocess.run(
         ['gcc', '-O2', '-Wall', '-Wextra', '-pedantic', '-std=c99', '-Isrc',
-         'src/avoidance.c', 'test/runner_main.c', '-o', 'test_runner.exe'],
+         'src/avoidance_preop.c', 'src/avoidance_opmode.c',
+         'test/runner_main.c', '-o', 'test_runner.exe'],
         cwd=workdir,
         capture_output=True,
         text=True

@@ -61,9 +61,10 @@ static void dual_printf(const char *fmt, ...)
 
 static void set_envelope(AvdInput *in)
 {
+    in->envelope.valid  = 1;
     in->envelope.az_min = ENV_AZ_MIN;
-    in->envelope.az_max = ENV_AZ_MAX;
     in->envelope.el_min = ENV_EL_MIN;
+    in->envelope.az_max = ENV_AZ_MAX;
     in->envelope.el_max = ENV_EL_MAX;
 }
 
@@ -125,8 +126,9 @@ static int check_safety(const AvdOutput *out, const AvdInput *in)
     }
 
     /* forbidden zone check (strict interior) */
-    for (i = 0; i < in->forbidden_count; i++) {
+    for (i = 0; i < AVD_MAX_FORBIDDEN; i++) {
         const AvdRect *r = &in->forbidden[i];
+        if (!r->valid) continue;
         if (out->az_next > r->az_min && out->az_next < r->az_max &&
             out->el_next > r->el_min && out->el_next < r->el_max) {
             dual_printf("  !! VIOLATION: output (%.2f,%.2f) inside forbidden[%d]\n",
@@ -152,7 +154,7 @@ static int run_sim(const char *name,
     int reached = 0;
 
     /* PRE-OP: build visibility graph (time unconstrained) */
-    Avoidance_BuildGraph(&graph, in->forbidden, in->forbidden_count,
+    Avoidance_BuildGraph(&graph, in->forbidden,
                          &in->envelope, AVD_MOTION_LINEAR, AZ_WRAP);
 
     Avoidance_Init(&state, AVD_MOTION_LINEAR, AZ_WRAP);
@@ -163,10 +165,13 @@ static int run_sim(const char *name,
     dual_printf("  Envelope: AZ[%.1f,%.1f]  EL[%.1f,%.1f]  (az_wrap=%d)\n",
            in->envelope.az_min, in->envelope.az_max,
            in->envelope.el_min, in->envelope.el_max, AZ_WRAP);
-    dual_printf("  Forbidden zones: %d\n", in->forbidden_count);
     {
-        int i;
-        for (i = 0; i < in->forbidden_count; i++) {
+        int i, cnt = 0;
+        for (i = 0; i < AVD_MAX_FORBIDDEN; i++)
+            if (in->forbidden[i].valid) cnt++;
+        dual_printf("  Forbidden zones: %d\n", cnt);
+        for (i = 0; i < AVD_MAX_FORBIDDEN; i++) {
+            if (!in->forbidden[i].valid) continue;
             dual_printf("    [%2d] AZ[%7.1f, %7.1f]  EL[%6.1f, %6.1f]\n",
                    i,
                    in->forbidden[i].az_min, in->forbidden[i].az_max,
@@ -237,60 +242,303 @@ static int test_T1(void)
     AvdInput in;
     memset(&in, 0, sizeof(in));
     set_envelope(&in);
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        in.az_now = 158.60f;  in.el_now = 1.92f;
-    in.az_cmd = -119.58f;  in.el_cmd = 4.78f;
-    in.az_now = -30.0f; in.el_now = 55.0f;
+    in.az_now = 162.66f;  in.el_now = 11.81f;
+    in.az_cmd = -141.03f;  in.el_cmd = -9.53f;
 
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    in.forbidden_count = 16;
-in.forbidden_count = 16;
 /* Zone 00 */
-in.forbidden[0].az_min = -148.1f; in.forbidden[0].az_max = -107.4f;
-in.forbidden[0].el_min = -1.9f; in.forbidden[0].el_max = 25.7f;
+in.forbidden[0].valid = 1;
+in.forbidden[0].az_min = -169.6f; in.forbidden[0].el_min = 25.3f;
+in.forbidden[0].az_max = -142.0f; in.forbidden[0].el_max = 40.6f;
 /* Zone 01 */
-in.forbidden[1].az_min = 116.8f; in.forbidden[1].az_max = 132.6f;
-in.forbidden[1].el_min = 1.3f; in.forbidden[1].el_max = 15.6f;
+in.forbidden[1].valid = 1;
+in.forbidden[1].az_min = -169.4f; in.forbidden[1].el_min = -30.0f;
+in.forbidden[1].az_max = -131.8f; in.forbidden[1].el_max = -12.1f;
 /* Zone 02 */
-in.forbidden[2].az_min = -63.1f; in.forbidden[2].az_max = -18.8f;
-in.forbidden[2].el_min = 46.1f; in.forbidden[2].el_max = 60.0f;
+in.forbidden[2].valid = 1;
+in.forbidden[2].az_min = 9.9f; in.forbidden[2].el_min = -30.0f;
+in.forbidden[2].az_max = 33.6f; in.forbidden[2].el_max = -0.1f;
 /* Zone 03 */
-in.forbidden[3].az_min = -130.2f; in.forbidden[3].az_max = -94.9f;
-in.forbidden[3].el_min = 32.2f; in.forbidden[3].el_max = 60.0f;
+in.forbidden[3].valid = 1;
+in.forbidden[3].az_min = -134.0f; in.forbidden[3].el_min = 6.6f;
+in.forbidden[3].az_max = -106.0f; in.forbidden[3].el_max = 37.4f;
 /* Zone 04 */
-in.forbidden[4].az_min = 22.0f; in.forbidden[4].az_max = 40.6f;
-in.forbidden[4].el_min = 32.7f; in.forbidden[4].el_max = 60.0f;
+in.forbidden[4].valid = 1;
+in.forbidden[4].az_min = 102.1f; in.forbidden[4].el_min = 20.8f;
+in.forbidden[4].az_max = 125.5f; in.forbidden[4].el_max = 31.4f;
 /* Zone 05 */
-in.forbidden[5].az_min = 66.9f; in.forbidden[5].az_max = 94.5f;
-in.forbidden[5].el_min = 14.2f; in.forbidden[5].el_max = 37.0f;
+in.forbidden[5].valid = 1;
+in.forbidden[5].az_min = -34.4f; in.forbidden[5].el_min = -30.0f;
+in.forbidden[5].az_max = 6.9f; in.forbidden[5].el_max = -3.5f;
 /* Zone 06 */
-in.forbidden[6].az_min = -47.2f; in.forbidden[6].az_max = -31.6f;
-in.forbidden[6].el_min = -30.0f; in.forbidden[6].el_max = -6.9f;
+in.forbidden[6].valid = 1;
+in.forbidden[6].az_min = 94.6f; in.forbidden[6].el_min = -30.0f;
+in.forbidden[6].az_max = 137.9f; in.forbidden[6].el_max = 3.3f;
 /* Zone 07 */
-in.forbidden[7].az_min = 119.2f; in.forbidden[7].az_max = 144.4f;
-in.forbidden[7].el_min = -30.0f; in.forbidden[7].el_max = -12.2f;
+in.forbidden[7].valid = 1;
+in.forbidden[7].az_min = -44.3f; in.forbidden[7].el_min = 36.9f;
+in.forbidden[7].az_max = -6.5f; in.forbidden[7].el_max = 60.0f;
 /* Zone 08 */
-in.forbidden[8].az_min = 95.6f; in.forbidden[8].az_max = 133.0f;
-in.forbidden[8].el_min = 39.4f; in.forbidden[8].el_max = 60.0f;
+in.forbidden[8].valid = 1;
+in.forbidden[8].az_min = -76.9f; in.forbidden[8].el_min = 47.9f;
+in.forbidden[8].az_max = -52.6f; in.forbidden[8].el_max = 60.0f;
 /* Zone 09 */
-in.forbidden[9].az_min = -113.7f; in.forbidden[9].az_max = -83.7f;
-in.forbidden[9].el_min = -30.0f; in.forbidden[9].el_max = -2.4f;
+in.forbidden[9].valid = 1;
+in.forbidden[9].az_min = 20.5f; in.forbidden[9].el_min = 48.8f;
+in.forbidden[9].az_max = 55.5f; in.forbidden[9].el_max = 60.0f;
 /* Zone 10 */
-in.forbidden[10].az_min = 88.1f; in.forbidden[10].az_max = 110.7f;
-in.forbidden[10].el_min = -30.0f; in.forbidden[10].el_max = -14.5f;
+in.forbidden[10].valid = 1;
+in.forbidden[10].az_min = -78.3f; in.forbidden[10].el_min = -30.0f;
+in.forbidden[10].az_max = -36.8f; in.forbidden[10].el_max = -6.9f;
 /* Zone 11 */
-in.forbidden[11].az_min = -94.8f; in.forbidden[11].az_max = -72.9f;
-in.forbidden[11].el_min = 7.1f; in.forbidden[11].el_max = 18.1f;
+in.forbidden[11].valid = 1;
+in.forbidden[11].az_min = -122.3f; in.forbidden[11].el_min = 45.1f;
+in.forbidden[11].az_max = -84.6f; in.forbidden[11].el_max = 60.0f;
 /* Zone 12 */
-in.forbidden[12].az_min = 59.8f; in.forbidden[12].az_max = 85.9f;
-in.forbidden[12].el_min = -30.0f; in.forbidden[12].el_max = -13.6f;
+in.forbidden[12].valid = 1;
+in.forbidden[12].az_min = -123.9f; in.forbidden[12].el_min = -30.0f;
+in.forbidden[12].az_max = -96.5f; in.forbidden[12].el_max = -7.6f;
 /* Zone 13 */
-in.forbidden[13].az_min = -156.9f; in.forbidden[13].az_max = -129.5f;
-in.forbidden[13].el_min = -18.6f; in.forbidden[13].el_max = -5.6f;
+in.forbidden[13].valid = 1;
+in.forbidden[13].az_min = 66.6f; in.forbidden[13].el_min = -30.0f;
+in.forbidden[13].az_max = 88.9f; in.forbidden[13].el_max = -18.6f;
 /* Zone 14 */
-in.forbidden[14].az_min = -75.4f; in.forbidden[14].az_max = -50.2f;
-in.forbidden[14].el_min = -30.0f; in.forbidden[14].el_max = 1.4f;
+in.forbidden[14].valid = 1;
+in.forbidden[14].az_min = 74.7f; in.forbidden[14].el_min = 46.2f;
+in.forbidden[14].az_max = 115.1f; in.forbidden[14].el_max = 60.0f;
 /* Zone 15 */
-in.forbidden[15].az_min = 28.3f; in.forbidden[15].az_max = 62.7f;
-in.forbidden[15].el_min = -0.9f; in.forbidden[15].el_max = 32.4f;
+in.forbidden[15].valid = 1;
+in.forbidden[15].az_min = 64.1f; in.forbidden[15].el_min = -4.0f;
+in.forbidden[15].az_max = 84.0f; in.forbidden[15].el_max = 24.2f;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

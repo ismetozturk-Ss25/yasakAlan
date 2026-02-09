@@ -84,10 +84,12 @@ typedef enum {
  *  DATA STRUCTURES
  * ================================================================ */
 
-/* Axis-aligned rectangle in AZ-EL space */
+/* Forbidden zone in AZ-EL space (matches MATLAB 16x5 matrix row).
+ * Field order: valid, az_min, el_min, az_max, el_max */
 typedef struct {
-    avd_real az_min, az_max;
-    avd_real el_min, el_max;
+    int      valid;                /* 1 = active zone, 0 = unused row    */
+    avd_real az_min, el_min;       /* lower-left corner                  */
+    avd_real az_max, el_max;       /* upper-right corner                 */
 } AvdRect;
 
 /* Precomputed visibility graph — built once in pre-op mode.
@@ -104,8 +106,7 @@ typedef struct {
     avd_real  az_now, el_now;                       /* current position      */
     avd_real  az_cmd, el_cmd;                       /* commanded target      */
     AvdRect   envelope;                              /* working envelope      */
-    AvdRect   forbidden[AVD_MAX_FORBIDDEN];          /* forbidden zones       */
-    int       forbidden_count;                       /* 0 .. 16              */
+    AvdRect   forbidden[AVD_MAX_FORBIDDEN];          /* forbidden zones (16x5)*/
 } AvdInput;
 
 /* Algorithm output */
@@ -149,9 +150,10 @@ typedef struct {
  *
  *   Computes: ~V^2 × N segment checks (V<=128, N<=16).
  *   Typical time: 1-10 ms on DSP, no deadline.
+ *   forbidden[16] — zones with valid flag, always 16 entries.
  */
 void Avoidance_BuildGraph(AvdGraph *graph,
-                          const AvdRect *forbidden, int forbidden_count,
+                          const AvdRect *forbidden,
                           const AvdRect *envelope,
                           AvdMotionProfile profile, int az_wrap);
 

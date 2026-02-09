@@ -18,12 +18,13 @@
  * ============================================================== */
 
 static void project_target(avd_real *taz, avd_real *tel,
-                           const AvdRect *f, int n,
+                           const AvdRect *f,
                            const AvdRect *env,
                            int az_wrap)
 {
     int i;
-    for (i = 0; i < n; i++) {
+    for (i = 0; i < AVD_MAX_FORBIDDEN; i++) {
+        if (!f[i].valid) continue;
         if (!point_in_rect(*taz, *tel, &f[i])) continue;
 
         avd_real d[4];
@@ -64,13 +65,14 @@ static void project_target(avd_real *taz, avd_real *tel,
  * ============================================================== */
 
 static int try_escape(avd_real cur_az, avd_real cur_el,
-                      const AvdRect *f, int n,
+                      const AvdRect *f,
                       const AvdRect *env,
                       int az_wrap,
                       AvdOutput *out)
 {
     int i;
-    for (i = 0; i < n; i++) {
+    for (i = 0; i < AVD_MAX_FORBIDDEN; i++) {
+        if (!f[i].valid) continue;
         if (!point_in_rect(cur_az, cur_el, &f[i])) continue;
 
         /* 4 escape candidates: left, right, bottom, top */
@@ -110,7 +112,7 @@ static int try_escape(avd_real cur_az, avd_real cur_el,
             if (az_wrap) az = avd_normalize_az(az);
 
             if (!point_in_envelope(az, el, env)) continue;
-            if (point_in_any_forbidden(az, el, f, n)) continue;
+            if (point_in_any_forbidden(az, el, f)) continue;
 
             out->az_next = az;
             out->el_next = el;
@@ -164,7 +166,7 @@ static void clear_history(AvdState *state)
 
 static int find_best_waypoint(avd_real cur_az, avd_real cur_el,
                               avd_real tgt_az, avd_real tgt_el,
-                              const AvdRect *f, int n,
+                              const AvdRect *f,
                               const AvdRect *env,
                               AvdMotionProfile profile,
                               int az_wrap,
@@ -178,7 +180,9 @@ static int find_best_waypoint(avd_real cur_az, avd_real cur_el,
     int found_through = 0, found_inter = 0;
     int i, c;
 
-    for (i = 0; i < n; i++) {
+    for (i = 0; i < AVD_MAX_FORBIDDEN; i++) {
+        if (!f[i].valid) continue;
+
         avd_real az_lo = f[i].az_min;
         avd_real az_hi = f[i].az_max;
         avd_real el_lo = f[i].el_min;
@@ -205,10 +209,11 @@ static int find_best_waypoint(avd_real cur_az, avd_real cur_el,
             int sees_target;
 
             if (az_wrap) waz = avd_normalize_az(waz);
-
-            if (!point_in_envelope(waz, wel, env)) continue;
-            if (point_in_any_forbidden(waz, wel, f, n)) continue;
-            if (!path_is_clear(cur_az, cur_el, waz, wel, f, n,
+            /* Clamp to envelope (handles zones touching envelope edge) */
+            waz = avd_clamp(waz, env->az_min, env->az_max);
+            wel = avd_clamp(wel, env->el_min, env->el_max);
+            if (point_in_any_forbidden(waz, wel, f)) continue;
+            if (!path_is_clear(cur_az, cur_el, waz, wel, f,
                                profile, az_wrap))
                 continue;
             if (avd_manhattan(cur_az, cur_el, waz, wel, az_wrap)
@@ -222,7 +227,7 @@ static int find_best_waypoint(avd_real cur_az, avd_real cur_el,
                   + avd_manhattan(waz, wel, tgt_az, tgt_el, az_wrap);
 
             sees_target = path_is_clear(waz, wel, tgt_az, tgt_el,
-                                        f, n, profile, az_wrap);
+                                        f, profile, az_wrap);
 
             if (sees_target) {
                 if (score < best_through) {
@@ -423,7 +428,6 @@ AvdOutput Avoidance_Step(const AvdInput *in, AvdState *state,
     AvdOutput out;
     const AvdRect *env = &in->envelope;
     const AvdRect *f   = in->forbidden;
-    int n              = in->forbidden_count;
     AvdMotionProfile prof = state->profile;
     int wrap           = state->az_wrap;
 
@@ -431,7 +435,7 @@ AvdOutput Avoidance_Step(const AvdInput *in, AvdState *state,
     avd_real cur_el = in->el_now;
 
     /* ---- 0. Escape if currently inside a forbidden zone ---- */
-    if (try_escape(cur_az, cur_el, f, n, env, wrap, &out)) {
+    if (try_escape(cur_az, cur_el, f, env, wrap, &out)) {
         state->active = 0;
         state->path_valid = 0;
         return out;
@@ -443,10 +447,10 @@ AvdOutput Avoidance_Step(const AvdInput *in, AvdState *state,
     if (wrap) tgt_az = avd_normalize_az(tgt_az);
 
     /* ---- 2. Project target out of forbidden zones ---- */
-    project_target(&tgt_az, &tgt_el, f, n, env, wrap);
+    project_target(&tgt_az, &tgt_el, f, env, wrap);
 
     /* ---- 3. Direct path clear -> OK_DIRECT ---- */
-    if (path_is_clear(cur_az, cur_el, tgt_az, tgt_el, f, n, prof, wrap)) {
+    if (path_is_clear(cur_az, cur_el, tgt_az, tgt_el, f, prof, wrap)) {
         out.az_next   = tgt_az;
         out.el_next   = tgt_el;
         out.status    = AVD_OK_DIRECT;
@@ -479,7 +483,7 @@ AvdOutput Avoidance_Step(const AvdInput *in, AvdState *state,
                 avd_real nxt_az = state->path_az[state->path_idx + 1];
                 avd_real nxt_el = state->path_el[state->path_idx + 1];
                 if (path_is_clear(cur_az, cur_el, nxt_az, nxt_el,
-                                  f, n, prof, wrap)) {
+                                  f, prof, wrap)) {
                     state->path_idx++;
                     wp_az = nxt_az;
                     wp_el = nxt_el;
@@ -490,9 +494,9 @@ AvdOutput Avoidance_Step(const AvdInput *in, AvdState *state,
         /* verify waypoint still reachable */
         if (state->path_valid && state->path_idx < state->path_len) {
             if (point_in_envelope(wp_az, wp_el, env) &&
-                !point_in_any_forbidden(wp_az, wp_el, f, n) &&
+                !point_in_any_forbidden(wp_az, wp_el, f) &&
                 path_is_clear(cur_az, cur_el, wp_az, wp_el,
-                              f, n, prof, wrap)) {
+                              f, prof, wrap)) {
                 out.az_next = wp_az;
                 out.el_next = wp_el;
                 out.status  = AVD_OK_WAYPOINT;
@@ -510,9 +514,9 @@ AvdOutput Avoidance_Step(const AvdInput *in, AvdState *state,
         if (dist < AVD_WP_REACH_THRESH) {
             state->active = 0;
         } else if (point_in_envelope(state->wp_az, state->wp_el, env) &&
-                   !point_in_any_forbidden(state->wp_az, state->wp_el, f, n) &&
+                   !point_in_any_forbidden(state->wp_az, state->wp_el, f) &&
                    path_is_clear(cur_az, cur_el,
-                                 state->wp_az, state->wp_el, f, n,
+                                 state->wp_az, state->wp_el, f,
                                  prof, wrap)) {
             out.az_next = state->wp_az;
             out.el_next = state->wp_el;
@@ -527,7 +531,7 @@ AvdOutput Avoidance_Step(const AvdInput *in, AvdState *state,
     {
         avd_real wp_az, wp_el;
         if (find_best_waypoint(cur_az, cur_el, tgt_az, tgt_el,
-                               f, n, env, prof, wrap, state,
+                               f, env, prof, wrap, state,
                                &wp_az, &wp_el)) {
             state->active = 1;
             state->wp_az  = wp_az;

@@ -33,15 +33,22 @@ static void adj_set(unsigned char adj[][AVD_ADJ_BYTES], int i, int j)
  * ============================================================== */
 
 void Avoidance_BuildGraph(AvdGraph *graph,
-                          const AvdRect *forbidden, int forbidden_count,
+                          const AvdRect *forbidden,
                           const AvdRect *envelope,
                           AvdMotionProfile profile, int az_wrap)
 {
     int i, c, j;
     int nc = 0;
 
+    /* If envelope is not valid, produce empty graph */
+    if (!envelope->valid) {
+        graph->nc = 0;
+        return;
+    }
+
     /* ---- generate candidate nodes ---- */
-    for (i = 0; i < forbidden_count && nc < AVD_MAX_FIXED_NODES; i++) {
+    for (i = 0; i < AVD_MAX_FORBIDDEN && nc < AVD_MAX_FIXED_NODES; i++) {
+        if (!forbidden[i].valid) continue;
         avd_real az_lo = forbidden[i].az_min;
         avd_real az_hi = forbidden[i].az_max;
         avd_real el_lo = forbidden[i].el_min;
@@ -63,8 +70,10 @@ void Avoidance_BuildGraph(AvdGraph *graph,
         for (c = 0; c < AVD_CANDIDATES_PER_RECT && nc < AVD_MAX_FIXED_NODES; c++) {
             avd_real waz = caz[c], wel = cel[c];
             if (az_wrap) waz = avd_normalize_az(waz);
-            if (!point_in_envelope(waz, wel, envelope)) continue;
-            if (point_in_any_forbidden(waz, wel, forbidden, forbidden_count)) continue;
+            /* Clamp to envelope (handles zones touching envelope edge) */
+            waz = avd_clamp(waz, envelope->az_min, envelope->az_max);
+            wel = avd_clamp(wel, envelope->el_min, envelope->el_max);
+            if (point_in_any_forbidden(waz, wel, forbidden)) continue;
             graph->naz[nc] = waz;
             graph->nel[nc] = wel;
             nc++;
@@ -84,7 +93,7 @@ void Avoidance_BuildGraph(AvdGraph *graph,
         for (j = i + 1; j < nc; j++) {
             if (path_is_clear(graph->naz[i], graph->nel[i],
                               graph->naz[j], graph->nel[j],
-                              forbidden, forbidden_count,
+                              forbidden,
                               profile, az_wrap)) {
                 adj_set(graph->adj, i, j);
                 adj_set(graph->adj, j, i);

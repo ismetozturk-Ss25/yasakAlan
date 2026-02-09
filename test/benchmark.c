@@ -41,24 +41,27 @@ static volatile float sink;
  *  PHASE 1: Pre-Op BuildGraph benchmark
  * ================================================================ */
 static void bench_build_graph(const char *name,
-                              const AvdRect *forbidden, int forbidden_count,
+                              const AvdRect *forbidden,
                               const AvdRect *envelope,
                               int az_wrap,
                               AvdGraph *graph_out)
 {
     double t0, t1, elapsed, per_call_us;
-    int i;
+    int i, cnt = 0;
     int build_iters = 10000;
 
+    for (i = 0; i < AVD_MAX_FORBIDDEN; i++)
+        if (forbidden[i].valid) cnt++;
+
     /* First call to get the graph for later use */
-    Avoidance_BuildGraph(graph_out, forbidden, forbidden_count,
+    Avoidance_BuildGraph(graph_out, forbidden,
                          envelope, AVD_MOTION_LINEAR, az_wrap);
 
     /* Timed runs */
     t0 = get_time_sec();
     for (i = 0; i < build_iters; i++) {
         AvdGraph tmp;
-        Avoidance_BuildGraph(&tmp, forbidden, forbidden_count,
+        Avoidance_BuildGraph(&tmp, forbidden,
                              envelope, AVD_MOTION_LINEAR, az_wrap);
         sink = (float)tmp.nc;
     }
@@ -68,7 +71,7 @@ static void bench_build_graph(const char *name,
     per_call_us = (elapsed / build_iters) * 1e6;
 
     printf("  [PRE-OP] %s\n", name);
-    printf("    Forbidden zones : %d\n", forbidden_count);
+    printf("    Forbidden zones : %d\n", cnt);
     printf("    Graph nodes     : %d\n", graph_out->nc);
     printf("    Iterations      : %d\n", build_iters);
     printf("    Total time      : %.3f s\n", elapsed);
@@ -122,8 +125,13 @@ static void bench_step(const char *name, AvdInput *in, int az_wrap,
     per_call_us = (elapsed / ITERATIONS) * 1e6;
     per_call_ns = (elapsed / ITERATIONS) * 1e9;
 
-    printf("  [OP-MODE] %s\n", name);
-    printf("    Forbidden zones : %d\n", in->forbidden_count);
+    {
+        int j, cnt = 0;
+        for (j = 0; j < AVD_MAX_FORBIDDEN; j++)
+            if (in->forbidden[j].valid) cnt++;
+        printf("  [OP-MODE] %s\n", name);
+        printf("    Forbidden zones : %d\n", cnt);
+    }
     printf("    Graph provided  : %s\n", graph ? "YES" : "NO");
     printf("    Iterations      : %d\n", ITERATIONS);
     printf("    Total time      : %.3f s\n", elapsed);
@@ -159,8 +167,10 @@ int main(void)
     printf("========================================================\n\n");
 
     /* Common envelope */
-    envelope.az_min = -180.0f;  envelope.az_max = 180.0f;
-    envelope.el_min =  -30.0f;  envelope.el_max =  60.0f;
+    memset(&envelope, 0, sizeof(envelope));
+    envelope.valid  = 1;
+    envelope.az_min = -180.0f;  envelope.el_min = -30.0f;
+    envelope.az_max =  180.0f;  envelope.el_max =  60.0f;
 
     /* ==============================================================
      *  PRE-OP: BuildGraph timing
@@ -171,24 +181,28 @@ int main(void)
 
     /* Pre-op N=1 */
     {
-        AvdRect f1[1];
-        f1[0].az_min = -40.0f;  f1[0].az_max = 40.0f;
-        f1[0].el_min = -15.0f;  f1[0].el_max = 15.0f;
-        bench_build_graph("N=1  Single zone", f1, 1, &envelope, 1, &graph);
+        AvdRect f1[AVD_MAX_FORBIDDEN];
+        memset(f1, 0, sizeof(f1));
+        f1[0].valid = 1;
+        f1[0].az_min = -40.0f;  f1[0].el_min = -15.0f;
+        f1[0].az_max =  40.0f;  f1[0].el_max =  15.0f;
+        bench_build_graph("N=1  Single zone", f1, &envelope, 1, &graph);
     }
 
     /* Pre-op N=16 */
     {
-        AvdRect f16[16];
+        AvdRect f16[AVD_MAX_FORBIDDEN];
+        memset(f16, 0, sizeof(f16));
         for (i = 0; i < 16; i++) {
             float base_az = -160.0f + (float)(i % 4) * 85.0f;
             float base_el = -20.0f  + (float)(i / 4) * 20.0f;
+            f16[i].valid  = 1;
             f16[i].az_min = base_az;
-            f16[i].az_max = base_az + 20.0f;
             f16[i].el_min = base_el;
+            f16[i].az_max = base_az + 20.0f;
             f16[i].el_max = base_el + 10.0f;
         }
-        bench_build_graph("N=16 Maximum zones", f16, 16, &envelope, 1, &graph);
+        bench_build_graph("N=16 Maximum zones", f16, &envelope, 1, &graph);
     }
 
     /* ==============================================================
@@ -203,7 +217,6 @@ int main(void)
     in.az_now =  150.0f;  in.el_now =   0.0f;
     in.az_cmd = -150.0f;  in.el_cmd =  30.0f;
     in.envelope = envelope;
-    in.forbidden_count = 0;
 
     bench_step("N=0  Direct path (best case)", &in, 1, NULL);
 
@@ -212,25 +225,25 @@ int main(void)
     in.az_now = -100.0f;  in.el_now =  0.0f;
     in.az_cmd =  100.0f;  in.el_cmd =  0.0f;
     in.envelope = envelope;
-    in.forbidden_count = 1;
-    in.forbidden[0].az_min = -40.0f;  in.forbidden[0].az_max = 40.0f;
-    in.forbidden[0].el_min = -15.0f;  in.forbidden[0].el_max = 15.0f;
+    in.forbidden[0].valid = 1;
+    in.forbidden[0].az_min = -40.0f;  in.forbidden[0].el_min = -15.0f;
+    in.forbidden[0].az_max =  40.0f;  in.forbidden[0].el_max =  15.0f;
 
     bench_step("N=1  Greedy waypoint (no graph)", &in, 1, NULL);
 
     /* Scenario 3: N=1, with graph (A* available) */
     {
         AvdGraph g1;
-        Avoidance_BuildGraph(&g1, in.forbidden, in.forbidden_count,
+        Avoidance_BuildGraph(&g1, in.forbidden,
                              &envelope, AVD_MOTION_LINEAR, 1);
 
         memset(&in, 0, sizeof(in));
         in.az_now = -100.0f;  in.el_now =  0.0f;
         in.az_cmd =  100.0f;  in.el_cmd =  0.0f;
         in.envelope = envelope;
-        in.forbidden_count = 1;
-        in.forbidden[0].az_min = -40.0f;  in.forbidden[0].az_max = 40.0f;
-        in.forbidden[0].el_min = -15.0f;  in.forbidden[0].el_max = 15.0f;
+        in.forbidden[0].valid = 1;
+        in.forbidden[0].az_min = -40.0f;  in.forbidden[0].el_min = -15.0f;
+        in.forbidden[0].az_max =  40.0f;  in.forbidden[0].el_max =  15.0f;
 
         bench_step("N=1  With graph (A* available)", &in, 1, &g1);
     }
@@ -245,16 +258,16 @@ int main(void)
     in.az_now = -60.0f;  in.el_now =  0.0f;
     in.az_cmd =  60.0f;  in.el_cmd =  0.0f;
     in.envelope = envelope;
-    in.forbidden_count = 1;
-    in.forbidden[0].az_min = -10.0f;  in.forbidden[0].az_max = 10.0f;
-    in.forbidden[0].el_min = -29.0f;  in.forbidden[0].el_max = 59.0f;
+    in.forbidden[0].valid = 1;
+    in.forbidden[0].az_min = -10.0f;  in.forbidden[0].el_min = -29.0f;
+    in.forbidden[0].az_max =  10.0f;  in.forbidden[0].el_max =  59.0f;
 
     bench_step("N=1  Full-height wall (greedy only)", &in, 1, NULL);
 
     /* Scenario 5: Same wall but with graph */
     {
         AvdGraph g1b;
-        Avoidance_BuildGraph(&g1b, in.forbidden, in.forbidden_count,
+        Avoidance_BuildGraph(&g1b, in.forbidden,
                              &envelope, AVD_MOTION_LINEAR, 1);
 
         in.az_now = -60.0f;  in.el_now =  0.0f;
@@ -271,23 +284,26 @@ int main(void)
     in.az_now = -150.0f;  in.el_now = -20.0f;
     in.az_cmd =  150.0f;  in.el_cmd =  40.0f;
     in.envelope = envelope;
-    in.forbidden_count = 4;
     /* Vertical wall left */
-    in.forbidden[0].az_min = -60.0f;  in.forbidden[0].az_max = -40.0f;
-    in.forbidden[0].el_min = -29.0f;  in.forbidden[0].el_max =  40.0f;
+    in.forbidden[0].valid = 1;
+    in.forbidden[0].az_min = -60.0f;  in.forbidden[0].el_min = -29.0f;
+    in.forbidden[0].az_max = -40.0f;  in.forbidden[0].el_max =  40.0f;
     /* Vertical wall right */
-    in.forbidden[1].az_min =  40.0f;  in.forbidden[1].az_max =  60.0f;
-    in.forbidden[1].el_min = -10.0f;  in.forbidden[1].el_max =  59.0f;
+    in.forbidden[1].valid = 1;
+    in.forbidden[1].az_min =  40.0f;  in.forbidden[1].el_min = -10.0f;
+    in.forbidden[1].az_max =  60.0f;  in.forbidden[1].el_max =  59.0f;
     /* Horizontal wall top */
-    in.forbidden[2].az_min = -40.0f;  in.forbidden[2].az_max =  40.0f;
-    in.forbidden[2].el_min =  30.0f;  in.forbidden[2].el_max =  50.0f;
+    in.forbidden[2].valid = 1;
+    in.forbidden[2].az_min = -40.0f;  in.forbidden[2].el_min =  30.0f;
+    in.forbidden[2].az_max =  40.0f;  in.forbidden[2].el_max =  50.0f;
     /* Horizontal wall bottom */
-    in.forbidden[3].az_min = -40.0f;  in.forbidden[3].az_max =  40.0f;
-    in.forbidden[3].el_min = -20.0f;  in.forbidden[3].el_max =   0.0f;
+    in.forbidden[3].valid = 1;
+    in.forbidden[3].az_min = -40.0f;  in.forbidden[3].el_min = -20.0f;
+    in.forbidden[3].az_max =  40.0f;  in.forbidden[3].el_max =   0.0f;
 
     {
         AvdGraph gmaze;
-        Avoidance_BuildGraph(&gmaze, in.forbidden, in.forbidden_count,
+        Avoidance_BuildGraph(&gmaze, in.forbidden,
                              &envelope, AVD_MOTION_LINEAR, 1);
 
         bench_step("N=4  Maze layout (with graph)", &in, 1, &gmaze);
@@ -298,13 +314,13 @@ int main(void)
     in.az_now = -170.0f;  in.el_now = -25.0f;
     in.az_cmd =  170.0f;  in.el_cmd =  55.0f;
     in.envelope = envelope;
-    in.forbidden_count = 16;
     for (i = 0; i < 16; i++) {
         float base_az = -160.0f + (float)(i % 4) * 85.0f;
         float base_el = -20.0f  + (float)(i / 4) * 20.0f;
+        in.forbidden[i].valid  = 1;
         in.forbidden[i].az_min = base_az;
-        in.forbidden[i].az_max = base_az + 20.0f;
         in.forbidden[i].el_min = base_el;
+        in.forbidden[i].az_max = base_az + 20.0f;
         in.forbidden[i].el_max = base_el + 10.0f;
     }
 
@@ -313,7 +329,7 @@ int main(void)
     /* Scenario 8: N=16, with precomputed graph */
     {
         AvdGraph g16;
-        Avoidance_BuildGraph(&g16, in.forbidden, in.forbidden_count,
+        Avoidance_BuildGraph(&g16, in.forbidden,
                              &envelope, AVD_MOTION_LINEAR, 1);
 
         in.az_now = -170.0f;  in.el_now = -25.0f;
@@ -333,9 +349,9 @@ int main(void)
         in.az_now = -170.0f;  in.el_now =  0.0f;
         in.az_cmd =  170.0f;  in.el_cmd =  0.0f;
         in.envelope = envelope;
-        in.forbidden_count = 16;
         for (i = 0; i < 16; i++) {
             float base_az = -160.0f + (float)i * 20.0f;
+            in.forbidden[i].valid  = 1;
             in.forbidden[i].az_min = base_az;
             in.forbidden[i].az_max = base_az + 18.0f;
             /* Alternate tall and short to create staggered gaps */
@@ -348,7 +364,7 @@ int main(void)
             }
         }
 
-        Avoidance_BuildGraph(&gwall, in.forbidden, in.forbidden_count,
+        Avoidance_BuildGraph(&gwall, in.forbidden,
                              &envelope, AVD_MOTION_LINEAR, 1);
 
         bench_step("N=16 Staggered wall (worst case)", &in, 1, &gwall);

@@ -248,7 +248,7 @@ def plot(data):
             verticalalignment='bottom', fontfamily='monospace',
             bbox=dict(boxstyle='round,pad=0.3', facecolor='wheat', alpha=0.7),
             zorder=10)
-    plt.show()
+    #plt.show()
     plt.tight_layout()
     a = random.randint(0, 99999999999)
     plt.savefig(f'figure\path_plot_{a}.png', dpi=150, bbox_inches='tight')

@@ -6,16 +6,23 @@
  *   2. Static inline helper functions (12 functions)
  *   3. Function declarations for BuildGraph, Init, Step
  *
+ * Forbidden zone format matches MATLAB 16x5 matrix:
+ *   Column 1: valid  (1=active, 0=unused)
+ *   Column 2: az_min
+ *   Column 3: el_min
+ *   Column 4: az_max
+ *   Column 5: el_max
+ *
  * Simulink S-Function Blocks:
  *
  *   "Avoidance_PreOp" — runs ONCE (time unconstrained)
  *   ┌──────────────────────────────────────────────────────────────┐
  *   │  INPUTS:                                                     │
- *   │    Port 1: forbidden[16x4]  (az_min,az_max,el_min,el_max)  │
- *   │    Port 2: forbidden_count  (int, 0..16)                    │
- *   │    Port 3: envelope[4]      (az_min,az_max,el_min,el_max)  │
- *   │    Port 4: motion_profile   (int, 0/1/2)                    │
- *   │    Port 5: az_wrap          (int, 0/1)                      │
+ *   │    Port 1: forbidden[16x5]  (valid,az_min,el_min,           │
+ *   │                              az_max,el_max per row)         │
+ *   │    Port 2: envelope[4]      (az_min,el_min,az_max,el_max)  │
+ *   │    Port 3: motion_profile   (int, 0/1/2)                    │
+ *   │    Port 4: az_wrap          (int, 0/1)                      │
  *   │  OUTPUTS:                                                    │
  *   │    Port 1: graph_nc         (int, node count)               │
  *   │    Port 2: graph_naz[128]   (node AZ coords)               │
@@ -29,12 +36,11 @@
  *   │    Port  1: az_now, Port 2: el_now                          │
  *   │    Port  3: az_cmd, Port 4: el_cmd                          │
  *   │    Port  5: envelope[4]                                     │
- *   │    Port  6: forbidden[16x4]                                 │
- *   │    Port  7: forbidden_count                                 │
- *   │    Port  8: graph_nc                                        │
- *   │    Port  9: graph_naz[128]                                  │
- *   │    Port 10: graph_nel[128]                                  │
- *   │    Port 11: graph_adj[128x16]                               │
+ *   │    Port  6: forbidden[16x5]                                 │
+ *   │    Port  7: graph_nc                                        │
+ *   │    Port  8: graph_naz[128]                                  │
+ *   │    Port  9: graph_nel[128]                                  │
+ *   │    Port 10: graph_adj[128x16]                               │
  *   │  OUTPUTS:                                                    │
  *   │    Port 1: az_next  (next AZ command)                       │
  *   │    Port 2: el_next  (next EL command)                       │
@@ -97,10 +103,12 @@ typedef enum {
  *  DATA STRUCTURES
  * ================================================================ */
 
-/* Axis-aligned rectangle in AZ-EL space */
+/* Forbidden zone in AZ-EL space (matches MATLAB 16x5 matrix row).
+ * Field order: valid, az_min, el_min, az_max, el_max */
 typedef struct {
-    avd_real az_min, az_max;
-    avd_real el_min, el_max;
+    int      valid;                /* 1 = active zone, 0 = unused row    */
+    avd_real az_min, el_min;       /* lower-left corner                  */
+    avd_real az_max, el_max;       /* upper-right corner                 */
 } AvdRect;
 
 /* Precomputed visibility graph — built once in pre-op mode.
@@ -117,8 +125,7 @@ typedef struct {
     avd_real  az_now, el_now;                       /* current position      */
     avd_real  az_cmd, el_cmd;                       /* commanded target      */
     AvdRect   envelope;                              /* working envelope      */
-    AvdRect   forbidden[AVD_MAX_FORBIDDEN];          /* forbidden zones       */
-    int       forbidden_count;                       /* 0 .. 16              */
+    AvdRect   forbidden[AVD_MAX_FORBIDDEN];          /* forbidden zones (16x5)*/
 } AvdInput;
 
 /* Algorithm output */
@@ -213,10 +220,11 @@ static inline int point_in_rect(avd_real az, avd_real el, const AvdRect *r)
 }
 
 static inline int point_in_any_forbidden(avd_real az, avd_real el,
-                                         const AvdRect *f, int n)
+                                         const AvdRect *f)
 {
     int i;
-    for (i = 0; i < n; i++) {
+    for (i = 0; i < AVD_MAX_FORBIDDEN; i++) {
+        if (!f[i].valid) continue;
         if (point_in_rect(az, el, &f[i])) return 1;
     }
     return 0;
@@ -271,7 +279,7 @@ static inline int segment_hits_rect(avd_real p0x, avd_real p0y,
 
 static inline int segment_is_clear(avd_real p0x, avd_real p0y,
                                    avd_real p1x, avd_real p1y,
-                                   const AvdRect *f, int n,
+                                   const AvdRect *f,
                                    int az_wrap)
 {
     int i;
@@ -293,18 +301,23 @@ static inline int segment_is_clear(avd_real p0x, avd_real p0y,
         t_split  = (bnd - p0x) / eff_daz;
         el_split = p0y + t_split * (p1y - p0y);
 
-        for (i = 0; i < n; i++)
+        for (i = 0; i < AVD_MAX_FORBIDDEN; i++) {
+            if (!f[i].valid) continue;
             if (segment_hits_rect(p0x, p0y, bnd, el_split, &f[i]))
                 return 0;
+        }
 
-        for (i = 0; i < n; i++)
+        for (i = 0; i < AVD_MAX_FORBIDDEN; i++) {
+            if (!f[i].valid) continue;
             if (segment_hits_rect(-bnd, el_split, p1x, p1y, &f[i]))
                 return 0;
+        }
 
         return 1;
     }
 
-    for (i = 0; i < n; i++) {
+    for (i = 0; i < AVD_MAX_FORBIDDEN; i++) {
+        if (!f[i].valid) continue;
         if (segment_hits_rect(p0x, p0y, p1x, p1y, &f[i]))
             return 0;
     }
@@ -315,23 +328,23 @@ static inline int segment_is_clear(avd_real p0x, avd_real p0y,
 
 static inline int path_is_clear(avd_real p0az, avd_real p0el,
                                 avd_real p1az, avd_real p1el,
-                                const AvdRect *f, int n,
+                                const AvdRect *f,
                                 AvdMotionProfile profile,
                                 int az_wrap)
 {
     switch (profile) {
     case AVD_MOTION_AZ_THEN_EL:
-        if (!segment_is_clear(p0az, p0el, p1az, p0el, f, n, az_wrap)) return 0;
-        return segment_is_clear(p1az, p0el, p1az, p1el, f, n, az_wrap);
+        if (!segment_is_clear(p0az, p0el, p1az, p0el, f, az_wrap)) return 0;
+        return segment_is_clear(p1az, p0el, p1az, p1el, f, az_wrap);
 
     case AVD_MOTION_EL_THEN_AZ:
-        if (!segment_is_clear(p0az, p0el, p0az, p1el, f, n, az_wrap)) return 0;
-        return segment_is_clear(p0az, p1el, p1az, p1el, f, n, az_wrap);
+        if (!segment_is_clear(p0az, p0el, p0az, p1el, f, az_wrap)) return 0;
+        return segment_is_clear(p0az, p1el, p1az, p1el, f, az_wrap);
 
     default: /* AVD_MOTION_LINEAR */
-        if (!segment_is_clear(p0az, p0el, p1az, p1el, f, n, az_wrap)) return 0;
-        if (!segment_is_clear(p0az, p1el, p1az, p1el, f, n, az_wrap)) return 0;
-        if (!segment_is_clear(p1az, p0el, p1az, p1el, f, n, az_wrap)) return 0;
+        if (!segment_is_clear(p0az, p0el, p1az, p1el, f, az_wrap)) return 0;
+        if (!segment_is_clear(p0az, p1el, p1az, p1el, f, az_wrap)) return 0;
+        if (!segment_is_clear(p1az, p0el, p1az, p1el, f, az_wrap)) return 0;
         return 1;
     }
 }
@@ -344,10 +357,10 @@ static inline int path_is_clear(avd_real p0az, avd_real p0el,
  * Avoidance_BuildGraph  (PRE-OP)
  *   Precomputes the visibility graph from forbidden zones.
  *   Call ONCE in pre-op mode (time unconstrained).
- *   Computes: ~V^2 x N segment checks (V<=128, N<=16).
+ *   forbidden[16] — zones with valid flag, always 16 entries.
  */
 void Avoidance_BuildGraph(AvdGraph *graph,
-                          const AvdRect *forbidden, int forbidden_count,
+                          const AvdRect *forbidden,
                           const AvdRect *envelope,
                           AvdMotionProfile profile, int az_wrap);
 

@@ -91,11 +91,11 @@ def generate_zones(
 
 def zones_to_c(zones: list[Rect], var_name: str = "in") -> str:
     lines = []
-    lines.append(f"{var_name}.forbidden_count = {len(zones)};")
     for i, z in enumerate(zones):
         lines.append(f"/* Zone {i:02d} */")
-        lines.append(f"{var_name}.forbidden[{i}].az_min = {z.az_min:.1f}f; {var_name}.forbidden[{i}].az_max = {z.az_max:.1f}f;")
-        lines.append(f"{var_name}.forbidden[{i}].el_min = {z.el_min:.1f}f; {var_name}.forbidden[{i}].el_max = {z.el_max:.1f}f;")
+        lines.append(f"{var_name}.forbidden[{i}].valid = 1;")
+        lines.append(f"{var_name}.forbidden[{i}].az_min = {z.az_min:.1f}f; {var_name}.forbidden[{i}].el_min = {z.el_min:.1f}f;")
+        lines.append(f"{var_name}.forbidden[{i}].az_max = {z.az_max:.1f}f; {var_name}.forbidden[{i}].el_max = {z.el_max:.1f}f;")
     return "\n".join(lines) + "\n"
 
 def main():

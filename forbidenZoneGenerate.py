@@ -100,6 +100,7 @@ def zones_to_c(zones: list[Rect], var_name: str = "in") -> str:
 
 def main():
     a = random.randint(0, 99999999999)
+    #a = 757698269
     zones = generate_zones(
         n=16,
         az_range=(-170.0, 170.0),

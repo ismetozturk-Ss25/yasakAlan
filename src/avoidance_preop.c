@@ -10,8 +10,7 @@
  * No dependencies on avoidance_opmode.c.
  */
 
-#include "avoidance_preop.h"
-#include "avoidance_helpers.h"
+#include "avoidance_simulink.h"
 
 /* ==============================================================
  *  BIT-PACKED  ADJACENCY  HELPER  (local to preop)

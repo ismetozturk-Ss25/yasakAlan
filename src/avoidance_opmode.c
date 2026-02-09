@@ -11,8 +11,7 @@
  * No dependencies on avoidance_preop.c.
  */
 
-#include "avoidance_opmode.h"
-#include "avoidance_helpers.h"
+#include "avoidance_simulink.h"
 
 /* ==============================================================
  *  TARGET PROJECTION

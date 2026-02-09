@@ -263,35 +263,53 @@ static int try_escape(avd_real cur_az, avd_real cur_el,
     for (i = 0; i < n; i++) {
         if (!point_in_rect(cur_az, cur_el, &f[i])) continue;
 
-        avd_real d_left  = avd_abs(cur_az - f[i].az_min);
-        avd_real d_right = avd_abs(cur_az - f[i].az_max);
-        avd_real d_bot   = avd_abs(cur_el - f[i].el_min);
-        avd_real d_top   = avd_abs(cur_el - f[i].el_max);
+        /* 4 escape candidates: left, right, bottom, top */
+        avd_real cand_az[4], cand_el[4], cand_d[4];
+        int order[4] = {0, 1, 2, 3};
+        int j, k;
 
-        avd_real best = d_left;
-        out->az_next = f[i].az_min - AVD_CORNER_EPS;
-        out->el_next = cur_el;
+        cand_az[0] = f[i].az_min - AVD_CORNER_EPS;  cand_el[0] = cur_el;
+        cand_d[0]  = avd_abs(cur_az - f[i].az_min);
 
-        if (d_right < best) {
-            best = d_right;
-            out->az_next = f[i].az_max + AVD_CORNER_EPS;
-            out->el_next = cur_el;
-        }
-        if (d_bot < best) {
-            best = d_bot;
-            out->az_next = cur_az;
-            out->el_next = f[i].el_min - AVD_CORNER_EPS;
-        }
-        if (d_top < best) {
-            out->az_next = cur_az;
-            out->el_next = f[i].el_max + AVD_CORNER_EPS;
+        cand_az[1] = f[i].az_max + AVD_CORNER_EPS;  cand_el[1] = cur_el;
+        cand_d[1]  = avd_abs(cur_az - f[i].az_max);
+
+        cand_az[2] = cur_az;  cand_el[2] = f[i].el_min - AVD_CORNER_EPS;
+        cand_d[2]  = avd_abs(cur_el - f[i].el_min);
+
+        cand_az[3] = cur_az;  cand_el[3] = f[i].el_max + AVD_CORNER_EPS;
+        cand_d[3]  = avd_abs(cur_el - f[i].el_max);
+
+        /* Sort by distance (insertion sort on 4 elements, max 6 swaps) */
+        for (j = 1; j < 4; j++) {
+            int key = order[j];
+            avd_real kd = cand_d[key];
+            k = j - 1;
+            while (k >= 0 && cand_d[order[k]] > kd) {
+                order[k + 1] = order[k];
+                k--;
+            }
+            order[k + 1] = key;
         }
 
-        out->az_next = avd_clamp(out->az_next, env->az_min, env->az_max);
-        out->el_next = avd_clamp(out->el_next, env->el_min, env->el_max);
-        if (az_wrap) out->az_next = avd_normalize_az(out->az_next);
-        out->status  = AVD_OK_WAYPOINT;
-        return 1;
+        /* Try nearest first; skip if blocked by another zone or envelope */
+        for (j = 0; j < 4; j++) {
+            int idx = order[j];
+            avd_real az = avd_clamp(cand_az[idx], env->az_min, env->az_max);
+            avd_real el = avd_clamp(cand_el[idx], env->el_min, env->el_max);
+            if (az_wrap) az = avd_normalize_az(az);
+
+            if (!point_in_envelope(az, el, env)) continue;
+            if (point_in_any_forbidden(az, el, f, n)) continue;
+
+            out->az_next = az;
+            out->el_next = el;
+            out->status  = AVD_OK_WAYPOINT;
+            return 1;
+        }
+
+        /* All 4 sides blocked — should not happen in practice */
+        return 0;
     }
     return 0;
 }

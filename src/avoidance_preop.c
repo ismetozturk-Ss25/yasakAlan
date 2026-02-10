@@ -115,9 +115,10 @@ void Avoidance_BuildGraph(AvdGraph *graph,
         for (c = 0; c < AVD_CANDIDATES_PER_RECT && nc < AVD_MAX_FIXED_NODES; c++) {
             avd_real waz = caz[c], wel = cel[c];
             if (az_wrap) waz = avd_normalize_az(waz);
-            /* Clamp to envelope (handles zones touching envelope edge) */
-            waz = avd_clamp(waz, envelope->az_min, envelope->az_max);
-            wel = avd_clamp(wel, envelope->el_min, envelope->el_max);
+            /* Skip nodes outside envelope (don't clamp — clamping
+             * puts nodes ON zone boundaries when zone edge = envelope edge,
+             * causing false adjacencies along the boundary) */
+            if (!point_in_envelope(waz, wel, envelope)) continue;
             if (point_in_any_forbidden(waz, wel, forbidden)) continue;
             graph->naz[nc] = waz;
             graph->nel[nc] = wel;

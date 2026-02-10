@@ -300,13 +300,44 @@ AvdOutput Avoidance_Step(const AvdInput *in, AvdState *state,
                          const AvdGraph *graph)
 {
     AvdOutput out;
-    const AvdRect *env = &in->envelope;
-    const AvdRect *f   = in->forbidden;
     AvdMotionProfile prof = state->profile;
-    int wrap           = state->az_wrap;
+    int wrap              = state->az_wrap;
+    avd_real cur_az       = in->az_now;
+    avd_real cur_el       = in->el_now;
 
-    avd_real cur_az = in->az_now;
-    avd_real cur_el = in->el_now;
+    /* Wrap-envelope local copies (used only when az_min > az_max) */
+    AvdRect local_f[AVD_MAX_FORBIDDEN];
+    AvdRect local_env;
+    const AvdRect *env;
+    const AvdRect *f;
+
+    /* Handle wrap-around envelope: when az_min > az_max with az_wrap,
+     * the working zone crosses the +/-180 boundary.
+     * Add the excluded gap [az_max, az_min] as a forbidden zone and
+     * expand envelope to [-180, 180]. */
+    if (wrap && in->envelope.valid && in->envelope.az_min > in->envelope.az_max) {
+        int i;
+        for (i = 0; i < AVD_MAX_FORBIDDEN; i++)
+            local_f[i] = in->forbidden[i];
+        for (i = 0; i < AVD_MAX_FORBIDDEN; i++) {
+            if (!local_f[i].valid) {
+                local_f[i].valid  = 1;
+                local_f[i].az_min = in->envelope.az_max;
+                local_f[i].az_max = in->envelope.az_min;
+                local_f[i].el_min = in->envelope.el_min;
+                local_f[i].el_max = in->envelope.el_max;
+                break;
+            }
+        }
+        local_env = in->envelope;
+        local_env.az_min = -180.0f;
+        local_env.az_max =  180.0f;
+        env = &local_env;
+        f   = local_f;
+    } else {
+        env = &in->envelope;
+        f   = in->forbidden;
+    }
 
     /* ---- Step 1: Escape if currently inside a forbidden zone ---- */
     if (try_escape(cur_az, cur_el, f, env, wrap, &out)) {

@@ -53,9 +53,9 @@ static void dual_printf(const char *fmt, ...)
 /* ================================================================
  *  COMMON ENVELOPE  (edit these to match your hardware)
  * ================================================================ */
-#define ENV_AZ_MIN  -180.0f
-#define ENV_AZ_MAX   180.0f
-#define ENV_EL_MIN    0.0f
+#define ENV_AZ_MIN  35.0f
+#define ENV_AZ_MAX   30.0f
+#define ENV_EL_MIN    -5.0f
 #define ENV_EL_MAX    40.0f
 #define AZ_WRAP       1
 
@@ -115,8 +115,24 @@ static int check_safety(const AvdOutput *out, const AvdInput *in)
     int violations = 0;
     int i;
 
-    /* envelope check */
-    if (out->az_next < in->envelope.az_min - 0.2f ||
+    /* envelope check (wrap-aware for AZ) */
+    if (in->envelope.az_min > in->envelope.az_max) {
+        /* Wrap-around envelope: valid AZ is [az_min,180] U [-180,az_max]
+         * Invalid AZ is strictly inside the gap (az_max, az_min) */
+        if (out->az_next > in->envelope.az_max + 0.2f &&
+            out->az_next < in->envelope.az_min - 0.2f) {
+            dual_printf("  !! VIOLATION: output (%.2f,%.2f) in AZ gap [%.1f,%.1f]\n",
+                   out->az_next, out->el_next,
+                   in->envelope.az_max, in->envelope.az_min);
+            violations++;
+        }
+        if (out->el_next < in->envelope.el_min - 0.2f ||
+            out->el_next > in->envelope.el_max + 0.2f) {
+            dual_printf("  !! VIOLATION: output (%.2f,%.2f) outside EL envelope\n",
+                   out->az_next, out->el_next);
+            violations++;
+        }
+    } else if (out->az_next < in->envelope.az_min - 0.2f ||
         out->az_next > in->envelope.az_max + 0.2f ||
         out->el_next < in->envelope.el_min - 0.2f ||
         out->el_next > in->envelope.el_max + 0.2f) {
@@ -243,23 +259,23 @@ static int test_T1(void)
     memset(&in, 0, sizeof(in));
     set_envelope(&in);
     /* Start: initPosX=50, initPosY=1   Target: RefX=-41, RefY=22 */
-    in.az_now =  110.0f;   in.el_now = 1.0f;
-    in.az_cmd = 21.0f;   in.el_cmd = 1.0f;
+    in.az_now =  110.0f;   in.el_now = 0.0f;
+    in.az_cmd = 21.0f;   in.el_cmd = 0.0f;
 
     /* Zone 0: AZ[10,15] EL[0,20] */
     in.forbidden[0].valid = 1;
-    in.forbidden[0].az_min =  170.0f;  in.forbidden[0].el_min =  -15.0f;
+    in.forbidden[0].az_min =  170.0f;  in.forbidden[0].el_min =  -30.0f;
     in.forbidden[0].az_max =  180.0f;  in.forbidden[0].el_max = 35.0f;
 
     /* Zone 1: AZ[30,40] EL[0,34] */
     in.forbidden[1].valid = 1;
-    in.forbidden[1].az_min = 30.0f;  in.forbidden[1].el_min = -30.0f;
-    in.forbidden[1].az_max = 35.0f;  in.forbidden[1].el_max = 48.0f;
+    in.forbidden[1].az_min = -180.0f;  in.forbidden[1].el_min = -30.0f;
+    in.forbidden[1].az_max = -170.0f;  in.forbidden[1].el_max = 36.0f;
 
     /* Zone 2: AZ[60,90] EL[0,15] */
-    in.forbidden[2].valid = 1;
-    in.forbidden[2].az_min = -180.0f;  in.forbidden[2].el_min = -15.0f;
-    in.forbidden[2].az_max = -170.0f;  in.forbidden[2].el_max = 35.0f;
+    in.forbidden[2].valid = 0;
+    in.forbidden[2].az_min = 115.0f;  in.forbidden[2].el_min = -15.0f;
+    in.forbidden[2].az_max = 150.0f;  in.forbidden[2].el_max = 25.0f;
 
     /* Zone 3: AZ[-20,-10] EL[0,18] */
     in.forbidden[3].valid = 0;
@@ -280,237 +296,6 @@ static int test_T1(void)
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     return run_sim("T1: (50,1)->(-41,22) 6 zones, env[-150,150]",
                    &in, 2.0f, 200*100);
 }
@@ -519,36 +304,7 @@ static int test_T1(void)
 
 
 
-/* T2: Bug scenario -- start=(110,1), target=(21,1), 3 zones creating wrap+wall
- * Zones at +/-180 boundary and AZ=30-35 create a wall that requires routing
- * around via the gap between zones. */
-static int test_T2(void)
-{
-    AvdInput in;
-    memset(&in, 0, sizeof(in));
-    set_envelope(&in);
 
-    in.az_now = 110.0f;  in.el_now = 1.0f;
-    in.az_cmd =  21.0f;  in.el_cmd = 1.0f;
-
-    /* Zone 0: wall at +180 boundary */
-    in.forbidden[0].valid  = 1;
-    in.forbidden[0].az_min = 170.0f;   in.forbidden[0].el_min = -15.0f;
-    in.forbidden[0].az_max = 180.0f;   in.forbidden[0].el_max = 35.0f;
-
-    /* Zone 1: wall at AZ=30-35 (floor to ceiling) */
-    in.forbidden[1].valid  = 1;
-    in.forbidden[1].az_min = 30.0f;    in.forbidden[1].el_min = -30.0f;
-    in.forbidden[1].az_max = 35.0f;    in.forbidden[1].el_max = 48.0f;
-
-    /* Zone 2: wall at -180 boundary */
-    in.forbidden[2].valid  = 1;
-    in.forbidden[2].az_min = -180.0f;  in.forbidden[2].el_min = -15.0f;
-    in.forbidden[2].az_max = -170.0f;  in.forbidden[2].el_max = 35.0f;
-
-    return run_sim("T2: Bug (110,1)->(21,1) wrap+wall 3 zones",
-                   &in, 2.0f, 200);
-}
 
 /*c ================================================================
  *  MAIN
@@ -572,7 +328,6 @@ int main(void)
     dual_printf("================================================\n");
 
     total_fails += test_T1();
-    total_fails += test_T2();
 
     dual_printf("\n================================================\n");
     if (total_fails == 0)

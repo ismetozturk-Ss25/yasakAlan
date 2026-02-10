@@ -71,10 +71,41 @@ void Avoidance_BuildGraph(AvdGraph *graph,
     int i, c, j;
     int nc = 0;
 
+    /* Wrap-envelope local copies (used only when az_min > az_max) */
+    AvdRect local_f[AVD_MAX_FORBIDDEN];
+    AvdRect local_env;
+
     /* If envelope is not valid, produce empty graph */
     if (!envelope->valid) {
         graph->nc = 0;
         return;
+    }
+
+    /* Handle wrap-around envelope: when az_min > az_max with az_wrap,
+     * the working zone crosses the +/-180 boundary.
+     * Example: az_min=35, az_max=30 means AZ[35->180->-180->30] is valid,
+     * only the gap [30,35] is excluded.
+     * Convert to full [-180,180] envelope and add the excluded gap
+     * [az_max, az_min] as an implicit forbidden zone. */
+    if (az_wrap && envelope->az_min > envelope->az_max) {
+        for (i = 0; i < AVD_MAX_FORBIDDEN; i++)
+            local_f[i] = forbidden[i];
+        /* Find empty slot for the gap zone */
+        for (i = 0; i < AVD_MAX_FORBIDDEN; i++) {
+            if (!local_f[i].valid) {
+                local_f[i].valid  = 1;
+                local_f[i].az_min = envelope->az_max;
+                local_f[i].az_max = envelope->az_min;
+                local_f[i].el_min = envelope->el_min;
+                local_f[i].el_max = envelope->el_max;
+                break;
+            }
+        }
+        local_env = *envelope;
+        local_env.az_min = -180.0f;
+        local_env.az_max =  180.0f;
+        forbidden = local_f;
+        envelope  = &local_env;
     }
 
 #ifdef AVD_DEBUG_PRINT

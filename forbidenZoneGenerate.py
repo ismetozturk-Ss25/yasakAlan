@@ -17,7 +17,7 @@ def overlaps(a: Rect, b: Rect) -> bool:
     return True
 
 def generate_zones(
-    n: int = 16,
+    n: int = 32,
     az_range=(-170.0, 170.0),
     el_range=(-30.0, 60.0),
     az_size_range=(15.0, 45.0),
@@ -102,7 +102,7 @@ def main():
     a = random.randint(0, 99999999999)
     #a = 757698269
     zones = generate_zones(
-        n=16,
+        n=32,
         az_range=(-170.0, 170.0),
         el_range=(-30.0, 60.0),
         az_size_range=(15.0, 45.0),

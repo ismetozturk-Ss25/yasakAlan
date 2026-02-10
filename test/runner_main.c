@@ -296,12 +296,31 @@ static int test_T1(void)
 
 
 
-    return run_sim("T1: (50,1)->(-41,22) 6 zones, env[-150,150]",
+    return run_sim("T1: (110,0)->(21,0) wrap env[35,30], 2 split zones",
                    &in, 2.0f, 200*100);
 }
 
+/* T2: Wrapped forbidden zone AZ[170,-171] with wrap envelope [35,30]
+ *     This is the user's MATLAB scenario that caused graph_nc=0.
+ *     Zone wraps around +/-180 and must be split internally. */
+static int test_T2(void)
+{
+    AvdInput in;
+    memset(&in, 0, sizeof(in));
+    set_envelope(&in);
 
+    /* Start: initPosX=110, initPosY=0   Target: RefX=21, RefY=0 */
+    in.az_now = 110.0f;   in.el_now = 0.0f;
+    in.az_cmd =  21.0f;   in.el_cmd = 0.0f;
 
+    /* Zone 0: AZ[170,-171] EL[-15,35] — WRAPS around +/-180 */
+    in.forbidden[0].valid  = 1;
+    in.forbidden[0].az_min = 170.0f;   in.forbidden[0].el_min = -15.0f;
+    in.forbidden[0].az_max = -171.0f;  in.forbidden[0].el_max = 35.0f;
+
+    return run_sim("T2: (110,0)->(21,0) wrapped zone AZ[170,-171], env[35,30]",
+                   &in, 2.0f, 200*100);
+}
 
 
 
@@ -328,6 +347,7 @@ int main(void)
     dual_printf("================================================\n");
 
     total_fails += test_T1();
+    total_fails += test_T2();
 
     dual_printf("\n================================================\n");
     if (total_fails == 0)

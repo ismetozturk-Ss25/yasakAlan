@@ -81,31 +81,68 @@ void Avoidance_BuildGraph(AvdGraph *graph,
         return;
     }
 
-    /* Handle wrap-around envelope: when az_min > az_max with az_wrap,
-     * the working zone crosses the +/-180 boundary.
-     * Example: az_min=35, az_max=30 means AZ[35->180->-180->30] is valid,
-     * only the gap [30,35] is excluded.
-     * Convert to full [-180,180] envelope and add the excluded gap
-     * [az_max, az_min] as an implicit forbidden zone. */
-    if (az_wrap && envelope->az_min > envelope->az_max) {
-        for (i = 0; i < AVD_MAX_FORBIDDEN; i++)
-            local_f[i] = forbidden[i];
-        /* Find empty slot for the gap zone */
-        for (i = 0; i < AVD_MAX_FORBIDDEN; i++) {
-            if (!local_f[i].valid) {
-                local_f[i].valid  = 1;
-                local_f[i].az_min = envelope->az_max;
-                local_f[i].az_max = envelope->az_min;
-                local_f[i].el_min = envelope->el_min;
-                local_f[i].el_max = envelope->el_max;
-                break;
+    /* Handle wrap-around scenarios when az_wrap is enabled:
+     * 1. Wrap-around envelope (az_min > az_max): add gap [az_max, az_min]
+     *    as forbidden zone, expand envelope to [-180, 180].
+     * 2. Wrap-around forbidden zones (az_min > az_max): split into two
+     *    non-wrapping zones at the +/-180 boundary so Liang-Barsky works.
+     * Both must be resolved before node generation and visibility checks. */
+    if (az_wrap) {
+        int need_local = 0;
+        if (envelope->az_min > envelope->az_max) need_local = 1;
+        if (!need_local) {
+            for (i = 0; i < AVD_MAX_FORBIDDEN; i++) {
+                if (forbidden[i].valid && forbidden[i].az_min > forbidden[i].az_max) {
+                    need_local = 1; break;
+                }
             }
         }
-        local_env = *envelope;
-        local_env.az_min = -180.0f;
-        local_env.az_max =  180.0f;
-        forbidden = local_f;
-        envelope  = &local_env;
+        if (need_local) {
+            int s;
+            for (i = 0; i < AVD_MAX_FORBIDDEN; i++)
+                local_f[i] = forbidden[i];
+            local_env = *envelope;
+
+            /* 1. Wrap-around envelope → add gap, expand to [-180,180] */
+            if (local_env.az_min > local_env.az_max) {
+                for (i = 0; i < AVD_MAX_FORBIDDEN; i++) {
+                    if (!local_f[i].valid) {
+                        local_f[i].valid  = 1;
+                        local_f[i].az_min = local_env.az_max;
+                        local_f[i].az_max = local_env.az_min;
+                        local_f[i].el_min = local_env.el_min;
+                        local_f[i].el_max = local_env.el_max;
+                        break;
+                    }
+                }
+                local_env.az_min = -180.0f;
+                local_env.az_max =  180.0f;
+            }
+
+            /* 2. Split wrapped forbidden zones at +/-180 boundary */
+            for (i = 0; i < AVD_MAX_FORBIDDEN; i++) {
+                avd_real orig_max;
+                if (!local_f[i].valid) continue;
+                if (local_f[i].az_min <= local_f[i].az_max) continue;
+                /* AZ[az_min, az_max] with az_min>az_max → wraps ±180
+                 * Split: Zone A [az_min, 180], Zone B [-180, az_max] */
+                orig_max = local_f[i].az_max;
+                local_f[i].az_max = 180.0f;
+                for (s = 0; s < AVD_MAX_FORBIDDEN; s++) {
+                    if (!local_f[s].valid) {
+                        local_f[s].valid  = 1;
+                        local_f[s].az_min = -180.0f;
+                        local_f[s].el_min = local_f[i].el_min;
+                        local_f[s].az_max = orig_max;
+                        local_f[s].el_max = local_f[i].el_max;
+                        break;
+                    }
+                }
+            }
+
+            forbidden = local_f;
+            envelope  = &local_env;
+        }
     }
 
 #ifdef AVD_DEBUG_PRINT

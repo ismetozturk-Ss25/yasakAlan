@@ -288,37 +288,10 @@ static void Avoidance_BuildGraph(AvdGraph *graph,
     int i, c, j;
     int nc = 0;
 
-    /* Wrap-envelope local copies (used only when az_min > az_max) */
-    AvdRect local_f[AVD_MAX_FORBIDDEN];
-    AvdRect local_env;
-
     /* If envelope is not valid, produce empty graph */
     if (!envelope->valid) {
         graph->nc = 0;
         return;
-    }
-
-    /* Handle wrap-around envelope: az_min > az_max means working zone
-     * crosses +/-180. Add gap [az_max, az_min] as forbidden zone and
-     * expand envelope to [-180, 180]. */
-    if (az_wrap && envelope->az_min > envelope->az_max) {
-        for (i = 0; i < AVD_MAX_FORBIDDEN; i++)
-            local_f[i] = forbidden[i];
-        for (i = 0; i < AVD_MAX_FORBIDDEN; i++) {
-            if (!local_f[i].valid) {
-                local_f[i].valid  = 1;
-                local_f[i].az_min = envelope->az_max;
-                local_f[i].az_max = envelope->az_min;
-                local_f[i].el_min = envelope->el_min;
-                local_f[i].el_max = envelope->el_max;
-                break;
-            }
-        }
-        local_env = *envelope;
-        local_env.az_min = -180.0f;
-        local_env.az_max =  180.0f;
-        forbidden = local_f;
-        envelope  = &local_env;
     }
 
     /* ---- generate candidate nodes ---- */
@@ -528,6 +501,25 @@ static void mdlOutputs(SimStruct *S, int_T tid)
     /* Port 6: motion_profile (0=LINEAR, 1=AZ_THEN_EL, 2=EL_THEN_AZ) */
     const real32_T *p6 = (const real32_T *)ssGetInputPortSignal(S, 6);
     AvdMotionProfile profile = (AvdMotionProfile)(int)(p6[0]);
+
+    /* Wrap-around envelope: az_min > az_max means working zone crosses
+     * +/-180.  Add the excluded gap [az_max, az_min] as a forbidden zone
+     * and expand envelope to [-180, 180]. */
+    if (az_wrap && envelope.az_min > envelope.az_max) {
+        uint16_T slot;
+        for (slot = 0; slot < AVD_MAX_FORBIDDEN; slot++) {
+            if (!forbidden[slot].valid) {
+                forbidden[slot].valid  = 1;
+                forbidden[slot].az_min = envelope.az_max;
+                forbidden[slot].az_max = envelope.az_min;
+                forbidden[slot].el_min = envelope.el_min;
+                forbidden[slot].el_max = envelope.el_max;
+                break;
+            }
+        }
+        envelope.az_min = -180.0f;
+        envelope.az_max =  180.0f;
+    }
 
     /* Split any wrapped zones (az_min > az_max) into two non-wrapping zones */
     split_wrapped_zones(forbidden, AVD_MAX_FORBIDDEN,

@@ -23,7 +23,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
-#include "avoidance.h"
+#include "avoidance_simulink.h"
 
 /* ================================================================
  *  OUTPUT FILE  (dual output to console and file)
@@ -53,10 +53,10 @@ static void dual_printf(const char *fmt, ...)
 /* ================================================================
  *  COMMON ENVELOPE  (edit these to match your hardware)
  * ================================================================ */
-#define ENV_AZ_MIN  -179.9f
-#define ENV_AZ_MAX   179.99f
-#define ENV_EL_MIN   -30.0f
-#define ENV_EL_MAX    60.0f
+#define ENV_AZ_MIN  -180.0f
+#define ENV_AZ_MAX   180.0f
+#define ENV_EL_MIN    0.0f
+#define ENV_EL_MAX    40.0f
 #define AZ_WRAP       1
 
 static void set_envelope(AvdInput *in)
@@ -242,78 +242,39 @@ static int test_T1(void)
     AvdInput in;
     memset(&in, 0, sizeof(in));
     set_envelope(&in);
-    in.az_now = 162.66f;  in.el_now = 11.81f;
-    in.az_cmd = -141.03f;  in.el_cmd = -9.53f;
+    /* Start: initPosX=50, initPosY=1   Target: RefX=-41, RefY=22 */
+    in.az_now =  110.0f;   in.el_now = 1.0f;
+    in.az_cmd = 21.0f;   in.el_cmd = 1.0f;
 
-/* Zone 00 */
-in.forbidden[0].valid = 1;
-in.forbidden[0].az_min = -169.6f; in.forbidden[0].el_min = 25.3f;
-in.forbidden[0].az_max = -142.0f; in.forbidden[0].el_max = 40.6f;
-/* Zone 01 */
-in.forbidden[1].valid = 1;
-in.forbidden[1].az_min = -169.4f; in.forbidden[1].el_min = -30.0f;
-in.forbidden[1].az_max = -131.8f; in.forbidden[1].el_max = -12.1f;
-/* Zone 02 */
-in.forbidden[2].valid = 1;
-in.forbidden[2].az_min = 9.9f; in.forbidden[2].el_min = -30.0f;
-in.forbidden[2].az_max = 33.6f; in.forbidden[2].el_max = -0.1f;
-/* Zone 03 */
-in.forbidden[3].valid = 1;
-in.forbidden[3].az_min = -134.0f; in.forbidden[3].el_min = 6.6f;
-in.forbidden[3].az_max = -106.0f; in.forbidden[3].el_max = 37.4f;
-/* Zone 04 */
-in.forbidden[4].valid = 1;
-in.forbidden[4].az_min = 102.1f; in.forbidden[4].el_min = 20.8f;
-in.forbidden[4].az_max = 125.5f; in.forbidden[4].el_max = 31.4f;
-/* Zone 05 */
-in.forbidden[5].valid = 1;
-in.forbidden[5].az_min = -34.4f; in.forbidden[5].el_min = -30.0f;
-in.forbidden[5].az_max = 6.9f; in.forbidden[5].el_max = -3.5f;
-/* Zone 06 */
-in.forbidden[6].valid = 1;
-in.forbidden[6].az_min = 94.6f; in.forbidden[6].el_min = -30.0f;
-in.forbidden[6].az_max = 137.9f; in.forbidden[6].el_max = 3.3f;
-/* Zone 07 */
-in.forbidden[7].valid = 1;
-in.forbidden[7].az_min = -44.3f; in.forbidden[7].el_min = 36.9f;
-in.forbidden[7].az_max = -6.5f; in.forbidden[7].el_max = 60.0f;
-/* Zone 08 */
-in.forbidden[8].valid = 1;
-in.forbidden[8].az_min = -76.9f; in.forbidden[8].el_min = 47.9f;
-in.forbidden[8].az_max = -52.6f; in.forbidden[8].el_max = 60.0f;
-/* Zone 09 */
-in.forbidden[9].valid = 1;
-in.forbidden[9].az_min = 20.5f; in.forbidden[9].el_min = 48.8f;
-in.forbidden[9].az_max = 55.5f; in.forbidden[9].el_max = 60.0f;
-/* Zone 10 */
-in.forbidden[10].valid = 1;
-in.forbidden[10].az_min = -78.3f; in.forbidden[10].el_min = -30.0f;
-in.forbidden[10].az_max = -36.8f; in.forbidden[10].el_max = -6.9f;
-/* Zone 11 */
-in.forbidden[11].valid = 1;
-in.forbidden[11].az_min = -122.3f; in.forbidden[11].el_min = 45.1f;
-in.forbidden[11].az_max = -84.6f; in.forbidden[11].el_max = 60.0f;
-/* Zone 12 */
-in.forbidden[12].valid = 1;
-in.forbidden[12].az_min = -123.9f; in.forbidden[12].el_min = -30.0f;
-in.forbidden[12].az_max = -96.5f; in.forbidden[12].el_max = -7.6f;
-/* Zone 13 */
-in.forbidden[13].valid = 1;
-in.forbidden[13].az_min = 66.6f; in.forbidden[13].el_min = -30.0f;
-in.forbidden[13].az_max = 88.9f; in.forbidden[13].el_max = -18.6f;
-/* Zone 14 */
-in.forbidden[14].valid = 1;
-in.forbidden[14].az_min = 74.7f; in.forbidden[14].el_min = 46.2f;
-in.forbidden[14].az_max = 115.1f; in.forbidden[14].el_max = 60.0f;
-/* Zone 15 */
-in.forbidden[15].valid = 1;
-in.forbidden[15].az_min = 64.1f; in.forbidden[15].el_min = -4.0f;
-in.forbidden[15].az_max = 84.0f; in.forbidden[15].el_max = 24.2f;
+    /* Zone 0: AZ[10,15] EL[0,20] */
+    in.forbidden[0].valid = 1;
+    in.forbidden[0].az_min =  170.0f;  in.forbidden[0].el_min =  -15.0f;
+    in.forbidden[0].az_max =  180.0f;  in.forbidden[0].el_max = 35.0f;
 
+    /* Zone 1: AZ[30,40] EL[0,34] */
+    in.forbidden[1].valid = 1;
+    in.forbidden[1].az_min = 30.0f;  in.forbidden[1].el_min = -30.0f;
+    in.forbidden[1].az_max = 35.0f;  in.forbidden[1].el_max = 48.0f;
 
+    /* Zone 2: AZ[60,90] EL[0,15] */
+    in.forbidden[2].valid = 1;
+    in.forbidden[2].az_min = -180.0f;  in.forbidden[2].el_min = -15.0f;
+    in.forbidden[2].az_max = -170.0f;  in.forbidden[2].el_max = 35.0f;
 
+    /* Zone 3: AZ[-20,-10] EL[0,18] */
+    in.forbidden[3].valid = 0;
+    in.forbidden[3].az_min = -20.0f;  in.forbidden[3].el_min = 0.0f;
+    in.forbidden[3].az_max = -10.0f;  in.forbidden[3].el_max = 18.0f;
 
+    /* Zone 4: AZ[-60,-40] EL[0,20] */
+    in.forbidden[4].valid = 0;
+    in.forbidden[4].az_min = -60.0f;  in.forbidden[4].el_min = 0.0f;
+    in.forbidden[4].az_max = -40.0f;  in.forbidden[4].el_max = 20.0f;
 
+    /* Zone 5: AZ[150,160] EL[0,35] */
+    in.forbidden[5].valid = 0;
+    in.forbidden[5].az_min = 150.0f;  in.forbidden[5].el_min = 0.0f;
+    in.forbidden[5].az_max = 160.0f;  in.forbidden[5].el_max = 35.0f;
 
 
 
@@ -545,13 +506,49 @@ in.forbidden[15].az_max = 84.0f; in.forbidden[15].el_max = 24.2f;
 
 
 
-    return run_sim("T1: No forbidden zones, wrap (OK_DIRECT expected)",
+
+
+
+
+
+    return run_sim("T1: (50,1)->(-41,22) 6 zones, env[-150,150]",
                    &in, 2.0f, 200*100);
 }
 
 
 
 
+
+/* T2: Bug scenario -- start=(110,1), target=(21,1), 3 zones creating wrap+wall
+ * Zones at +/-180 boundary and AZ=30-35 create a wall that requires routing
+ * around via the gap between zones. */
+static int test_T2(void)
+{
+    AvdInput in;
+    memset(&in, 0, sizeof(in));
+    set_envelope(&in);
+
+    in.az_now = 110.0f;  in.el_now = 1.0f;
+    in.az_cmd =  21.0f;  in.el_cmd = 1.0f;
+
+    /* Zone 0: wall at +180 boundary */
+    in.forbidden[0].valid  = 1;
+    in.forbidden[0].az_min = 170.0f;   in.forbidden[0].el_min = -15.0f;
+    in.forbidden[0].az_max = 180.0f;   in.forbidden[0].el_max = 35.0f;
+
+    /* Zone 1: wall at AZ=30-35 (floor to ceiling) */
+    in.forbidden[1].valid  = 1;
+    in.forbidden[1].az_min = 30.0f;    in.forbidden[1].el_min = -30.0f;
+    in.forbidden[1].az_max = 35.0f;    in.forbidden[1].el_max = 48.0f;
+
+    /* Zone 2: wall at -180 boundary */
+    in.forbidden[2].valid  = 1;
+    in.forbidden[2].az_min = -180.0f;  in.forbidden[2].el_min = -15.0f;
+    in.forbidden[2].az_max = -170.0f;  in.forbidden[2].el_max = 35.0f;
+
+    return run_sim("T2: Bug (110,1)->(21,1) wrap+wall 3 zones",
+                   &in, 2.0f, 200);
+}
 
 /*c ================================================================
  *  MAIN
@@ -575,13 +572,7 @@ int main(void)
     dual_printf("================================================\n");
 
     total_fails += test_T1();
-    /*total_fails += test_T2();
-    total_fails += test_T3();
-    total_fails += test_T4();
-    total_fails += test_T5();
-    total_fails += test_T6();
-    total_fails += test_T7();
-    total_fails += test_T8();*/
+    total_fails += test_T2();
 
     dual_printf("\n================================================\n");
     if (total_fails == 0)

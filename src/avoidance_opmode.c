@@ -2,8 +2,12 @@
  * avoidance_opmode.c — Op-Mode Avoidance Step Function
  *
  * Real-time path planner called every 1 ms.
- *   1. Greedy one-step planner (fast, ~2 700 ops)
- *   2. If greedy oscillates -> A* on precomputed graph
+ * Algorithm (5 steps):
+ *   1. Escape if inside forbidden zone (safety net)
+ *   2. Clamp + project target out of forbidden zones
+ *   3. Direct path clear? → OK_DIRECT, clear cache
+ *   4. A* path: compute or follow cached path
+ *   5. No path found → hold position
  *
  * This file compiles independently:
  *   gcc -c avoidance_opmode.c
@@ -92,7 +96,7 @@ static int try_escape(avd_real cur_az, avd_real cur_el,
         cand_az[3] = cur_az;  cand_el[3] = f[i].el_max + AVD_CORNER_EPS;
         cand_d[3]  = avd_abs(cur_el - f[i].el_max);
 
-        /* Sort by distance (insertion sort on 4 elements, max 6 swaps) */
+        /* Sort by distance (insertion sort on 4 elements) */
         for (j = 1; j < 4; j++) {
             int key = order[j];
             avd_real kd = cand_d[key];
@@ -127,136 +131,6 @@ static int try_escape(avd_real cur_az, avd_real cur_el,
 }
 
 /* ==============================================================
- *  OSCILLATION DETECTION HELPERS
- * ============================================================== */
-
-static int waypoint_in_history(avd_real waz, avd_real wel,
-                               const AvdState *state, int az_wrap)
-{
-    int i, idx;
-    for (i = 0; i < state->hist_count; i++) {
-        idx = (state->hist_idx - 1 - i + AVD_HISTORY_SIZE) % AVD_HISTORY_SIZE;
-        if (avd_manhattan(waz, wel, state->hist_az[idx], state->hist_el[idx], az_wrap)
-            < AVD_OSCILLATION_THRESH) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-static void add_to_history(avd_real waz, avd_real wel, AvdState *state)
-{
-    state->hist_az[state->hist_idx] = waz;
-    state->hist_el[state->hist_idx] = wel;
-    state->hist_idx = (state->hist_idx + 1) % AVD_HISTORY_SIZE;
-    if (state->hist_count < AVD_HISTORY_SIZE) {
-        state->hist_count++;
-    }
-}
-
-static void clear_history(AvdState *state)
-{
-    state->hist_idx   = 0;
-    state->hist_count = 0;
-}
-
-/* ==============================================================
- *  GREEDY WAYPOINT CANDIDATE EVALUATION
- * ============================================================== */
-
-static int find_best_waypoint(avd_real cur_az, avd_real cur_el,
-                              avd_real tgt_az, avd_real tgt_el,
-                              const AvdRect *f,
-                              const AvdRect *env,
-                              AvdMotionProfile profile,
-                              int az_wrap,
-                              const AvdState *state,
-                              avd_real *out_az, avd_real *out_el)
-{
-    avd_real best_through = 1.0e30f;
-    avd_real best_inter   = 1.0e30f;
-    avd_real through_az = 0, through_el = 0;
-    avd_real inter_az   = 0, inter_el   = 0;
-    int found_through = 0, found_inter = 0;
-    int i, c;
-
-    for (i = 0; i < AVD_MAX_FORBIDDEN; i++) {
-        if (!f[i].valid) continue;
-
-        avd_real az_lo = f[i].az_min;
-        avd_real az_hi = f[i].az_max;
-        avd_real el_lo = f[i].el_min;
-        avd_real el_hi = f[i].el_max;
-        avd_real az_mid = (az_lo + az_hi) * 0.5f;
-        avd_real el_mid = (el_lo + el_hi) * 0.5f;
-        avd_real eps = AVD_CORNER_EPS;
-
-        avd_real cand_az[8], cand_el[8];
-
-        cand_az[0] = az_lo - eps;   cand_el[0] = el_lo - eps;
-        cand_az[1] = az_hi + eps;   cand_el[1] = el_lo - eps;
-        cand_az[2] = az_hi + eps;   cand_el[2] = el_hi + eps;
-        cand_az[3] = az_lo - eps;   cand_el[3] = el_hi + eps;
-        cand_az[4] = az_mid;        cand_el[4] = el_lo - eps;
-        cand_az[5] = az_mid;        cand_el[5] = el_hi + eps;
-        cand_az[6] = az_lo - eps;   cand_el[6] = el_mid;
-        cand_az[7] = az_hi + eps;   cand_el[7] = el_mid;
-
-        for (c = 0; c < AVD_CANDIDATES_PER_RECT; c++) {
-            avd_real waz = cand_az[c];
-            avd_real wel = cand_el[c];
-            avd_real score;
-            int sees_target;
-
-            if (az_wrap) waz = avd_normalize_az(waz);
-            /* Clamp to envelope (handles zones touching envelope edge) */
-            waz = avd_clamp(waz, env->az_min, env->az_max);
-            wel = avd_clamp(wel, env->el_min, env->el_max);
-            if (point_in_any_forbidden(waz, wel, f)) continue;
-            if (!path_is_clear(cur_az, cur_el, waz, wel, f,
-                               profile, az_wrap))
-                continue;
-            if (avd_manhattan(cur_az, cur_el, waz, wel, az_wrap)
-                < AVD_WP_REACH_THRESH)
-                continue;
-
-            if (waypoint_in_history(waz, wel, state, az_wrap))
-                continue;
-
-            score = avd_manhattan(cur_az, cur_el, waz, wel, az_wrap)
-                  + avd_manhattan(waz, wel, tgt_az, tgt_el, az_wrap);
-
-            sees_target = path_is_clear(waz, wel, tgt_az, tgt_el,
-                                        f, profile, az_wrap);
-
-            if (sees_target) {
-                if (score < best_through) {
-                    best_through = score;
-                    through_az = waz;  through_el = wel;
-                    found_through = 1;
-                }
-            } else {
-                if (score < best_inter) {
-                    best_inter = score;
-                    inter_az = waz;  inter_el = wel;
-                    found_inter = 1;
-                }
-            }
-        }
-    }
-
-    if (found_through) {
-        *out_az = through_az;  *out_el = through_el;
-        return 1;
-    }
-    if (found_inter) {
-        *out_az = inter_az;  *out_el = inter_el;
-        return 1;
-    }
-    return 0;
-}
-
-/* ==============================================================
  *  BIT-PACKED  ADJACENCY  HELPER  (read-only, local to opmode)
  * ============================================================== */
 
@@ -266,26 +140,46 @@ static int adj_get(const unsigned char adj[][AVD_ADJ_BYTES], int i, int j)
 }
 
 /* ==============================================================
- *  NEAREST  GRAPH  NODE  (Manhattan distance, O(V))
+ *  NEAREST  REACHABLE  GRAPH  NODE
  *
- *  Snaps a position to the closest precomputed graph node.
- *  Cost: V comparisons = ~80 x 3 ops = ~240 ops.
+ *  Find closest node that has path_is_clear from given position.
+ *  Falls back to closest-by-distance if no reachable node found.
+ *  O(V) calls to path_is_clear.
  * ============================================================== */
 
-static int nearest_node(avd_real az, avd_real el,
-                        const AvdGraph *graph, int az_wrap)
+static int nearest_reachable_node(avd_real az, avd_real el,
+                                  const AvdGraph *graph,
+                                  const AvdRect *f,
+                                  AvdMotionProfile profile,
+                                  int az_wrap)
 {
-    int i, best = -1;
-    avd_real best_d = 1.0e30f;
+    int i;
+    int best_reachable = -1;
+    avd_real best_reach_d = 1.0e30f;
+    int best_any = -1;
+    avd_real best_any_d = 1.0e30f;
+
     for (i = 0; i < graph->nc; i++) {
         avd_real d = avd_manhattan(az, el,
                                     graph->naz[i], graph->nel[i], az_wrap);
-        if (d < best_d) {
-            best_d = d;
-            best = i;
+
+        /* Track closest overall (fallback) */
+        if (d < best_any_d) {
+            best_any_d = d;
+            best_any = i;
+        }
+
+        /* Check reachability */
+        if (path_is_clear(az, el, graph->naz[i], graph->nel[i],
+                          f, profile, az_wrap)) {
+            if (d < best_reach_d) {
+                best_reach_d = d;
+                best_reachable = i;
+            }
         }
     }
-    return best;
+
+    return (best_reachable >= 0) ? best_reachable : best_any;
 }
 
 /* ==============================================================
@@ -293,15 +187,6 @@ static int nearest_node(avd_real az, avd_real el,
  *
  *  Takes source and destination as graph NODE INDICES.
  *  All adjacency is precomputed — only array lookups during search.
- *  Edge costs = Manhattan distance (add + abs, no geometry).
- *
- *  Runtime cost:
- *    Find 2 nearest nodes: 2 x V x 3 ops     = ~480 ops
- *    A* search:            V x V bit-lookups   = ~6 400 ops
- *    Manhattan costs:      V x V x 3 ops       = ~19 200 ops
- *    Total:                                     ~26 000 ops
- *
- *  At 300 MHz DSP: ~0.09 ms.  One-time, cached.
  * ============================================================== */
 
 static int astar_on_graph(int src_idx, int dst_idx,
@@ -402,24 +287,13 @@ static int astar_on_graph(int src_idx, int dst_idx,
 
 void Avoidance_Init(AvdState *state, AvdMotionProfile profile, int az_wrap)
 {
-    int i;
-    state->active  = 0;
-    state->wp_az   = 0.0f;
-    state->wp_el   = 0.0f;
-    state->profile = profile;
-    state->az_wrap = az_wrap;
-    state->hist_idx   = 0;
-    state->hist_count = 0;
-    for (i = 0; i < AVD_HISTORY_SIZE; i++) {
-        state->hist_az[i] = 0.0f;
-        state->hist_el[i] = 0.0f;
-    }
+    state->profile     = profile;
+    state->az_wrap     = az_wrap;
     state->path_len    = 0;
     state->path_idx    = 0;
     state->path_valid  = 0;
     state->path_tgt_az = 0.0f;
     state->path_tgt_el = 0.0f;
-    state->greedy_wp_count = 0;
 }
 
 AvdOutput Avoidance_Step(const AvdInput *in, AvdState *state,
@@ -434,173 +308,125 @@ AvdOutput Avoidance_Step(const AvdInput *in, AvdState *state,
     avd_real cur_az = in->az_now;
     avd_real cur_el = in->el_now;
 
-    /* ---- 0. Escape if currently inside a forbidden zone ---- */
+    /* ---- Step 1: Escape if currently inside a forbidden zone ---- */
     if (try_escape(cur_az, cur_el, f, env, wrap, &out)) {
-        state->active = 0;
         state->path_valid = 0;
         return out;
     }
 
-    /* ---- 1. Clamp target to envelope ---- */
+    /* ---- Step 2: Clamp + project target ---- */
     avd_real tgt_az = avd_clamp(in->az_cmd, env->az_min, env->az_max);
     avd_real tgt_el = avd_clamp(in->el_cmd, env->el_min, env->el_max);
     if (wrap) tgt_az = avd_normalize_az(tgt_az);
 
-    /* ---- 2. Project target out of forbidden zones ---- */
     project_target(&tgt_az, &tgt_el, f, env, wrap);
 
-    /* ---- 3. Direct path clear -> OK_DIRECT ---- */
+    /* ---- Step 3: Direct path clear -> OK_DIRECT ---- */
     if (path_is_clear(cur_az, cur_el, tgt_az, tgt_el, f, prof, wrap)) {
         out.az_next   = tgt_az;
         out.el_next   = tgt_el;
         out.status    = AVD_OK_DIRECT;
-        state->active = 0;
         state->path_valid = 0;
-        state->greedy_wp_count = 0;
-        clear_history(state);
         return out;
     }
 
-    /* ---- 4. If following a cached A* path, continue it ---- */
+    /* ---- Step 4: A* path ---- */
+
+    /* 4a. Invalidate cache if target moved beyond threshold */
     if (state->path_valid) {
         if (avd_manhattan(tgt_az, tgt_el,
                           state->path_tgt_az, state->path_tgt_el, wrap)
-            > AVD_WP_REACH_THRESH) {
+            > AVD_TGT_MOVE_THRESH) {
             state->path_valid = 0;
         }
     }
 
+    /* 4b. Compute new A* path if no valid cache */
+    if (!state->path_valid && graph) {
+        int src = nearest_reachable_node(cur_az, cur_el, graph, f, prof, wrap);
+        int dst = nearest_reachable_node(tgt_az, tgt_el, graph, f, prof, wrap);
+        int plen = astar_on_graph(src, dst, graph, wrap,
+                                   state->path_az, state->path_el,
+                                   AVD_MAX_PATH_LEN);
+        if (plen > 0) {
+            state->path_len    = plen;
+            state->path_idx    = 0;
+            state->path_valid  = 1;
+            state->path_tgt_az = tgt_az;
+            state->path_tgt_el = tgt_el;
+        }
+    }
+
+    /* 4c. Follow cached path waypoint by waypoint */
     if (state->path_valid && state->path_idx < state->path_len) {
         avd_real wp_az = state->path_az[state->path_idx];
         avd_real wp_el = state->path_el[state->path_idx];
 
-        /* advance if current waypoint reached AND next is reachable */
+        /* Advance if current waypoint reached */
         if (avd_manhattan(cur_az, cur_el, wp_az, wp_el, wrap)
             < AVD_WP_REACH_THRESH) {
-            if (state->path_idx + 1 >= state->path_len) {
-                state->path_valid = 0;   /* path complete */
+            state->path_idx++;
+            if (state->path_idx >= state->path_len) {
+                state->path_valid = 0;
+                /* Fall through: re-check direct or recompute next call */
             } else {
-                avd_real nxt_az = state->path_az[state->path_idx + 1];
-                avd_real nxt_el = state->path_el[state->path_idx + 1];
-                if (path_is_clear(cur_az, cur_el, nxt_az, nxt_el,
-                                  f, prof, wrap)) {
-                    state->path_idx++;
-                    wp_az = nxt_az;
-                    wp_el = nxt_el;
-                }
+                wp_az = state->path_az[state->path_idx];
+                wp_el = state->path_el[state->path_idx];
             }
         }
 
-        /* verify waypoint still reachable */
+        /* At each waypoint, try shortcut direct to target */
         if (state->path_valid && state->path_idx < state->path_len) {
-            if (point_in_envelope(wp_az, wp_el, env) &&
-                !point_in_any_forbidden(wp_az, wp_el, f) &&
-                path_is_clear(cur_az, cur_el, wp_az, wp_el,
+            if (path_is_clear(cur_az, cur_el, tgt_az, tgt_el,
                               f, prof, wrap)) {
+                out.az_next   = tgt_az;
+                out.el_next   = tgt_el;
+                out.status    = AVD_OK_DIRECT;
+                state->path_valid = 0;
+                return out;
+            }
+
+            /* Verify waypoint still reachable */
+            if (path_is_clear(cur_az, cur_el, wp_az, wp_el,
+                              f, prof, wrap) &&
+                point_in_envelope(wp_az, wp_el, env) &&
+                !point_in_any_forbidden(wp_az, wp_el, f)) {
                 out.az_next = wp_az;
                 out.el_next = wp_el;
                 out.status  = AVD_OK_WAYPOINT;
                 return out;
             }
+
+            /* Waypoint became unreachable — invalidate and recompute */
             state->path_valid = 0;
         }
     }
 
-    /* ---- 5. GREEDY: check committed waypoint ---- */
-    if (state->active) {
-        avd_real dist = avd_manhattan(cur_az, cur_el,
-                                      state->wp_az, state->wp_el, wrap);
+    /* If path just got invalidated, try one more A* computation */
+    if (!state->path_valid && graph) {
+        int src = nearest_reachable_node(cur_az, cur_el, graph, f, prof, wrap);
+        int dst = nearest_reachable_node(tgt_az, tgt_el, graph, f, prof, wrap);
+        int plen = astar_on_graph(src, dst, graph, wrap,
+                                   state->path_az, state->path_el,
+                                   AVD_MAX_PATH_LEN);
+        if (plen > 0) {
+            state->path_len    = plen;
+            state->path_idx    = 0;
+            state->path_valid  = 1;
+            state->path_tgt_az = tgt_az;
+            state->path_tgt_el = tgt_el;
 
-        if (dist < AVD_WP_REACH_THRESH) {
-            state->active = 0;
-        } else if (point_in_envelope(state->wp_az, state->wp_el, env) &&
-                   !point_in_any_forbidden(state->wp_az, state->wp_el, f) &&
-                   path_is_clear(cur_az, cur_el,
-                                 state->wp_az, state->wp_el, f,
-                                 prof, wrap)) {
-            out.az_next = state->wp_az;
-            out.el_next = state->wp_el;
+            out.az_next = state->path_az[0];
+            out.el_next = state->path_el[0];
             out.status  = AVD_OK_WAYPOINT;
             return out;
-        } else {
-            state->active = 0;
         }
     }
 
-    /* ---- 6. GREEDY: search for best waypoint ---- */
-    {
-        avd_real wp_az, wp_el;
-        if (find_best_waypoint(cur_az, cur_el, tgt_az, tgt_el,
-                               f, env, prof, wrap, state,
-                               &wp_az, &wp_el)) {
-            state->active = 1;
-            state->wp_az  = wp_az;
-            state->wp_el  = wp_el;
-            add_to_history(wp_az, wp_el, state);
-            state->greedy_wp_count++;
-
-            /* Greedy escalation: trigger A* on precomputed graph */
-            if (graph && state->greedy_wp_count >= AVD_GREEDY_LIMIT) {
-                int src = nearest_node(cur_az, cur_el, graph, wrap);
-                int dst = nearest_node(tgt_az, tgt_el, graph, wrap);
-                int plen = astar_on_graph(src, dst, graph, wrap,
-                                           state->path_az, state->path_el,
-                                           AVD_MAX_PATH_LEN);
-                if (plen > 0) {
-                    state->path_len    = plen;
-                    state->path_idx    = 0;
-                    state->path_valid  = 1;
-                    state->path_tgt_az = tgt_az;
-                    state->path_tgt_el = tgt_el;
-                    state->active      = 0;
-                    state->greedy_wp_count = 0;
-                    clear_history(state);
-
-                    out.az_next = state->path_az[0];
-                    out.el_next = state->path_el[0];
-                    out.status  = AVD_OK_WAYPOINT;
-                    return out;
-                }
-            }
-
-            out.az_next   = wp_az;
-            out.el_next   = wp_el;
-            out.status    = AVD_OK_WAYPOINT;
-            return out;
-        }
-    }
-
-    /* ---- 7. Greedy failed -> A* fallback ---- */
-    if (graph) {
-        clear_history(state);
-        {
-            int src = nearest_node(cur_az, cur_el, graph, wrap);
-            int dst = nearest_node(tgt_az, tgt_el, graph, wrap);
-            int plen = astar_on_graph(src, dst, graph, wrap,
-                                       state->path_az, state->path_el,
-                                       AVD_MAX_PATH_LEN);
-            if (plen > 0) {
-                state->path_len    = plen;
-                state->path_idx    = 0;
-                state->path_valid  = 1;
-                state->path_tgt_az = tgt_az;
-                state->path_tgt_el = tgt_el;
-                state->active      = 0;
-                state->greedy_wp_count = 0;
-
-                out.az_next = state->path_az[0];
-                out.el_next = state->path_el[0];
-                out.status  = AVD_OK_WAYPOINT;
-                return out;
-            }
-        }
-    }
-
-    /* ---- 8. Truly no path ---- */
+    /* ---- Step 5: No path found — hold position ---- */
     out.az_next = cur_az;
     out.el_next = cur_el;
     out.status  = AVD_NO_PATH;
-    state->active = 0;
     state->path_valid = 0;
     return out;
 }

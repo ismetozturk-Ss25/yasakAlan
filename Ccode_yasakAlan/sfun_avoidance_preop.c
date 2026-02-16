@@ -14,6 +14,7 @@
  *   Port 4: env_el_max       (SS_SINGLE scalar)
  *   Port 5: az_wrap          (SS_SINGLE scalar, 0 or 1)
  *   Port 6: motion_profile   (SS_SINGLE scalar, 0/1/2)
+ *   Port 7: corner_eps       (SS_SINGLE scalar, waypoint offset from corners)
  *
  * OUTPUT PORTS:
  *   Port 0: graph_nc         (SS_INT16 scalar, node count)
@@ -283,7 +284,8 @@ static void adj_set(unsigned char adj[][AVD_ADJ_BYTES], int i, int j)
 static void Avoidance_BuildGraph(AvdGraph *graph,
                                  const AvdRect *forbidden,
                                  const AvdRect *envelope,
-                                 AvdMotionProfile profile, int az_wrap)
+                                 AvdMotionProfile profile, int az_wrap,
+                                 avd_real corner_eps)
 {
     int i, c, j;
     int nc = 0;
@@ -306,7 +308,7 @@ static void Avoidance_BuildGraph(AvdGraph *graph,
         el_hi  = forbidden[i].el_max;
         az_mid = (az_lo + az_hi) * 0.5f;
         el_mid = (el_lo + el_hi) * 0.5f;
-        eps    = AVD_CORNER_EPS;
+        eps    = corner_eps;
 
         caz[0] = az_lo - eps;  cel[0] = el_lo - eps;
         caz[1] = az_hi + eps;  cel[1] = el_lo - eps;
@@ -340,10 +342,13 @@ static void Avoidance_BuildGraph(AvdGraph *graph,
         avd_real sweep_az;
         avd_real sweep_el[3];
         int ne, ns;
-        avd_real az_step = 30.0f;
+        avd_real az_span = envelope->az_max - envelope->az_min;
+        avd_real az_step = az_span > 0.0f ? az_span / 5.0f : 60.0f;
+        if (az_step < 5.0f)  az_step = 5.0f;   /* min 5 deg  */
+        if (az_step > 60.0f) az_step = 60.0f;   /* max 60 deg */
 
-        sweep_el[0] = envelope->el_min + AVD_CORNER_EPS;
-        sweep_el[1] = envelope->el_max - AVD_CORNER_EPS;
+        sweep_el[0] = envelope->el_min + corner_eps;
+        sweep_el[1] = envelope->el_max - corner_eps;
         sweep_el[2] = (envelope->el_min + envelope->el_max) * 0.5f;
 
         for (sweep_az = envelope->az_min + az_step;
@@ -400,7 +405,7 @@ static void Avoidance_BuildGraph(AvdGraph *graph,
  *  S-FUNCTION METHODS
  * ================================================================ */
 
-#define NUM_INPUTS   7
+#define NUM_INPUTS   8
 #define NUM_OUTPUTS  4
 #define FZONE_ROWS   32
 #define FZONE_COLS   5
@@ -502,6 +507,10 @@ static void mdlOutputs(SimStruct *S, int_T tid)
     const real32_T *p6 = (const real32_T *)ssGetInputPortSignal(S, 6);
     AvdMotionProfile profile = (AvdMotionProfile)(int)(p6[0]);
 
+    /* Port 7: corner_eps */
+    const real32_T *p7 = (const real32_T *)ssGetInputPortSignal(S, 7);
+    avd_real corner_eps = p7[0];
+
     /* Wrap-around envelope: az_min > az_max means working zone crosses
      * +/-180.  Add the excluded gap [az_max, az_min] as a forbidden zone
      * and expand envelope to [-180, 180]. */
@@ -528,7 +537,7 @@ static void mdlOutputs(SimStruct *S, int_T tid)
     /* ============================================================
      *  CALL BuildGraph
      * ============================================================ */
-    Avoidance_BuildGraph(&graph, forbidden, &envelope, profile, az_wrap);
+    Avoidance_BuildGraph(&graph, forbidden, &envelope, profile, az_wrap, corner_eps);
 
     /* ============================================================
      *  WRITE OUTPUTS

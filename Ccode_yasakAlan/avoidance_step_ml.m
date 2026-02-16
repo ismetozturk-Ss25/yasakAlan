@@ -2,7 +2,7 @@ function [az_next, el_next, status, debug_node] = avoidance_step_ml( ...
     az_now, el_now, az_cmd, el_cmd, ...
     env_az_min, env_el_min, env_az_max, env_el_max, ...
     forbidden, az_wrap, motion_profile, ...
-    graph_nc, graph_naz, graph_nel, graph_adj)
+    graph_nc, graph_naz, graph_nel, graph_adj, corner_eps_in)
 %AVOIDANCE_STEP_ML  Forbidden-zone avoidance command shaper (MATLAB version)
 %
 %  Drop-in replacement for sfun_avoidance_opmode.c
@@ -26,6 +26,7 @@ function [az_next, el_next, status, debug_node] = avoidance_step_ml( ...
 %    graph_naz [1x256]       - node AZ coords            (single)
 %    graph_nel [1x256]       - node EL coords            (single)
 %    graph_adj [1x8192]      - adjacency bytes           (uint8)
+%    corner_eps_in           - waypoint offset from corners (single scalar)
 %
 %  OUTPUTS:
 %    az_next, el_next        - next command  (single)
@@ -34,7 +35,7 @@ function [az_next, el_next, status, debug_node] = avoidance_step_ml( ...
 
 % ---- Constants (must match C code) ----
 NFZ                     = int32(32);
-CORNER_EPS              = single(0.1);
+CORNER_EPS              = single(corner_eps_in);
 WP_REACH                = single(0.3);
 MAX_PATH_LEN            = int32(48);
 MAX_NODES               = int32(256);
@@ -143,14 +144,23 @@ if s_path_valid == int32(0)
     dst = find_nearest_reachable(tgt_az, tgt_el, g_naz, g_nel, nc, wrap, ...
                                   fv, fa1, fe1, fa2, fe2, prof, NFZ);
     [plen, paz, pel] = astar(src, dst, g_naz, g_nel, g_adj, ...
-                              nc, wrap, MAX_PATH_LEN, ADJ_BYTES_C, MAX_NODES);
+                              nc, wrap, MAX_PATH_LEN - int32(1), ADJ_BYTES_C, MAX_NODES);
     if plen > int32(0)
+        % Prepend src node: A* excludes it but the servo must first
+        % reach the nearest reachable graph node before following
+        % graph edges.  cur_pos->src is guaranteed clear.
+        % Write directly into persistent arrays (pre-allocated to
+        % MAX_PATH_LEN) to avoid growing the temporary paz/pel arrays.
+        s_path_az(1) = g_naz(src + 1);  % src is 0-based, array is 1-based
+        s_path_el(1) = g_nel(src + 1);
+        for pi = 1:plen
+            s_path_az(pi + 1) = paz(pi);
+            s_path_el(pi + 1) = pel(pi);
+        end
+        plen = plen + int32(1);
+
         s_path_len = plen;  s_path_idx = int32(1);
         s_path_valid = int32(1);
-        for pi = 1:plen
-            s_path_az(pi) = paz(pi);
-            s_path_el(pi) = pel(pi);
-        end
         s_path_tgt_az = tgt_az;  s_path_tgt_el = tgt_el;
     end
 end
@@ -201,14 +211,19 @@ if s_path_valid == int32(0)
     dst = find_nearest_reachable(tgt_az, tgt_el, g_naz, g_nel, nc, wrap, ...
                                   fv, fa1, fe1, fa2, fe2, prof, NFZ);
     [plen, paz, pel] = astar(src, dst, g_naz, g_nel, g_adj, ...
-                              nc, wrap, MAX_PATH_LEN, ADJ_BYTES_C, MAX_NODES);
+                              nc, wrap, MAX_PATH_LEN - int32(1), ADJ_BYTES_C, MAX_NODES);
     if plen > int32(0)
+        % Prepend src node (same as step 4b)
+        s_path_az(1) = g_naz(src + 1);
+        s_path_el(1) = g_nel(src + 1);
+        for pi = 1:plen
+            s_path_az(pi + 1) = paz(pi);
+            s_path_el(pi + 1) = pel(pi);
+        end
+        plen = plen + int32(1);
+
         s_path_len = plen;  s_path_idx = int32(1);
         s_path_valid = int32(1);
-        for pi = 1:plen
-            s_path_az(pi) = paz(pi);
-            s_path_el(pi) = pel(pi);
-        end
         s_path_tgt_az = tgt_az;  s_path_tgt_el = tgt_el;
 
         az_next = s_path_az(1);  el_next = s_path_el(1);

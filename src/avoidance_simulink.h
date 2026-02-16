@@ -68,6 +68,8 @@ extern "C" {
 #define AVD_CANDIDATES_PER_RECT 8      /* 4 corners + 4 edge midpoints      */
 #define AVD_MAX_PATH_LEN       48      /* max waypoints in planned path          */
 #define AVD_TGT_MOVE_THRESH    2.0f    /* target-moved threshold to invalidate cache */
+#define AVD_OSC_THRESH         3       /* DIRECT<->WAYPOINT flips to trigger A* lock */
+#define AVD_LOCK_DURATION      50      /* lock duration in steps (50ms at 1ms rate)  */
 
 /* Graph sizing */
 #define AVD_MAX_FIXED_NODES    (AVD_MAX_FORBIDDEN * AVD_CANDIDATES_PER_RECT) /* 256 */
@@ -144,6 +146,10 @@ typedef struct {
     int              path_valid;
     avd_real         path_tgt_az;
     avd_real         path_tgt_el;
+    /* Anti-oscillation state */
+    int              last_status;   /* previous output status (-1=init)    */
+    int              osc_count;     /* consecutive DIRECT<->WAYPOINT flips */
+    int              astar_lock;    /* countdown: >0 means skip direct     */
 } AvdState;
 
 /* ================================================================

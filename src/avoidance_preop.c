@@ -205,7 +205,10 @@ void Avoidance_BuildGraph(AvdGraph *graph,
         avd_real sweep_az;
         avd_real sweep_el[3];
         int ne, ns;
-        avd_real az_step = 30.0f;  /* one node every 30 degrees */
+        avd_real az_span = envelope->az_max - envelope->az_min;
+        avd_real az_step = az_span > 0.0f ? az_span / 5.0f : 60.0f;
+        if (az_step < 5.0f)  az_step = 5.0f;   /* min 5 deg  */
+        if (az_step > 60.0f) az_step = 60.0f;   /* max 60 deg */
 
         sweep_el[0] = envelope->el_min + AVD_CORNER_EPS;  /* bottom edge */
         sweep_el[1] = envelope->el_max - AVD_CORNER_EPS;  /* top edge    */

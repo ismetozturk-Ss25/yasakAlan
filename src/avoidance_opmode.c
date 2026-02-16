@@ -282,6 +282,31 @@ static int astar_on_graph(int src_idx, int dst_idx,
 }
 
 /* ==============================================================
+ *  ANTI-OSCILLATION HELPER
+ *
+ *  Detects rapid DIRECT<->WAYPOINT status flips.  After
+ *  AVD_OSC_THRESH consecutive flips, locks into A* mode for
+ *  AVD_LOCK_DURATION steps to break the oscillation cycle.
+ * ============================================================== */
+static void avd_update_osc(AvdState *state, int cur_status)
+{
+    if (state->last_status >= 0) {
+        int is_flip = ((state->last_status == AVD_OK_DIRECT  && cur_status == AVD_OK_WAYPOINT) ||
+                       (state->last_status == AVD_OK_WAYPOINT && cur_status == AVD_OK_DIRECT));
+        if (is_flip) {
+            state->osc_count++;
+            if (state->osc_count >= AVD_OSC_THRESH) {
+                state->astar_lock = AVD_LOCK_DURATION;
+                state->osc_count  = 0;
+            }
+        } else {
+            state->osc_count = 0;
+        }
+    }
+    state->last_status = cur_status;
+}
+
+/* ==============================================================
  *  PUBLIC  API
  * ============================================================== */
 
@@ -294,6 +319,9 @@ void Avoidance_Init(AvdState *state, AvdMotionProfile profile, int az_wrap)
     state->path_valid  = 0;
     state->path_tgt_az = 0.0f;
     state->path_tgt_el = 0.0f;
+    state->last_status = -1;
+    state->osc_count   = 0;
+    state->astar_lock  = 0;
 }
 
 AvdOutput Avoidance_Step(const AvdInput *in, AvdState *state,
@@ -304,6 +332,10 @@ AvdOutput Avoidance_Step(const AvdInput *in, AvdState *state,
     int wrap              = state->az_wrap;
     avd_real cur_az       = in->az_now;
     avd_real cur_el       = in->el_now;
+
+    /* Anti-oscillation: decrement lock timer */
+    if (state->astar_lock > 0)
+        state->astar_lock--;
 
     /* Wrap-envelope local copies (used only when az_min > az_max) */
     AvdRect local_f[AVD_MAX_FORBIDDEN];
@@ -382,6 +414,7 @@ AvdOutput Avoidance_Step(const AvdInput *in, AvdState *state,
     /* ---- Step 1: Escape if currently inside a forbidden zone ---- */
     if (try_escape(cur_az, cur_el, f, env, wrap, &out)) {
         state->path_valid = 0;
+        avd_update_osc(state, (int)out.status);
         return out;
     }
 
@@ -393,11 +426,13 @@ AvdOutput Avoidance_Step(const AvdInput *in, AvdState *state,
     project_target(&tgt_az, &tgt_el, f, env, wrap);
 
     /* ---- Step 3: Direct path clear -> OK_DIRECT ---- */
-    if (path_is_clear(cur_az, cur_el, tgt_az, tgt_el, f, prof, wrap)) {
+    if (state->astar_lock <= 0 &&
+        path_is_clear(cur_az, cur_el, tgt_az, tgt_el, f, prof, wrap)) {
         out.az_next   = tgt_az;
         out.el_next   = tgt_el;
         out.status    = AVD_OK_DIRECT;
         state->path_valid = 0;
+        avd_update_osc(state, AVD_OK_DIRECT);
         return out;
     }
 
@@ -418,8 +453,21 @@ AvdOutput Avoidance_Step(const AvdInput *in, AvdState *state,
         int dst = nearest_reachable_node(tgt_az, tgt_el, graph, f, prof, wrap);
         int plen = astar_on_graph(src, dst, graph, wrap,
                                    state->path_az, state->path_el,
-                                   AVD_MAX_PATH_LEN);
+                                   AVD_MAX_PATH_LEN - 1);
         if (plen > 0) {
+            /* Prepend src node: A* excludes it but the servo must
+               first reach the nearest reachable graph node before
+               following graph edges.  cur_pos→src is guaranteed
+               clear by nearest_reachable_node. */
+            int k;
+            for (k = plen; k > 0; k--) {
+                state->path_az[k] = state->path_az[k - 1];
+                state->path_el[k] = state->path_el[k - 1];
+            }
+            state->path_az[0] = graph->naz[src];
+            state->path_el[0] = graph->nel[src];
+            plen++;
+
             state->path_len    = plen;
             state->path_idx    = 0;
             state->path_valid  = 1;
@@ -448,12 +496,14 @@ AvdOutput Avoidance_Step(const AvdInput *in, AvdState *state,
 
         /* At each waypoint, try shortcut direct to target */
         if (state->path_valid && state->path_idx < state->path_len) {
-            if (path_is_clear(cur_az, cur_el, tgt_az, tgt_el,
+            if (state->astar_lock <= 0 &&
+                path_is_clear(cur_az, cur_el, tgt_az, tgt_el,
                               f, prof, wrap)) {
                 out.az_next   = tgt_az;
                 out.el_next   = tgt_el;
                 out.status    = AVD_OK_DIRECT;
                 state->path_valid = 0;
+                avd_update_osc(state, AVD_OK_DIRECT);
                 return out;
             }
 
@@ -465,6 +515,7 @@ AvdOutput Avoidance_Step(const AvdInput *in, AvdState *state,
                 out.az_next = wp_az;
                 out.el_next = wp_el;
                 out.status  = AVD_OK_WAYPOINT;
+                avd_update_osc(state, AVD_OK_WAYPOINT);
                 return out;
             }
 
@@ -479,8 +530,18 @@ AvdOutput Avoidance_Step(const AvdInput *in, AvdState *state,
         int dst = nearest_reachable_node(tgt_az, tgt_el, graph, f, prof, wrap);
         int plen = astar_on_graph(src, dst, graph, wrap,
                                    state->path_az, state->path_el,
-                                   AVD_MAX_PATH_LEN);
+                                   AVD_MAX_PATH_LEN - 1);
         if (plen > 0) {
+            /* Prepend src node (same as step 4b) */
+            int k;
+            for (k = plen; k > 0; k--) {
+                state->path_az[k] = state->path_az[k - 1];
+                state->path_el[k] = state->path_el[k - 1];
+            }
+            state->path_az[0] = graph->naz[src];
+            state->path_el[0] = graph->nel[src];
+            plen++;
+
             state->path_len    = plen;
             state->path_idx    = 0;
             state->path_valid  = 1;
@@ -490,6 +551,7 @@ AvdOutput Avoidance_Step(const AvdInput *in, AvdState *state,
             out.az_next = state->path_az[0];
             out.el_next = state->path_el[0];
             out.status  = AVD_OK_WAYPOINT;
+            avd_update_osc(state, AVD_OK_WAYPOINT);
             return out;
         }
     }
@@ -499,5 +561,6 @@ AvdOutput Avoidance_Step(const AvdInput *in, AvdState *state,
     out.el_next = cur_el;
     out.status  = AVD_NO_PATH;
     state->path_valid = 0;
+    avd_update_osc(state, AVD_NO_PATH);
     return out;
 }

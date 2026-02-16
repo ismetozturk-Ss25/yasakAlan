@@ -22,6 +22,7 @@
  *   Port 12: graph_naz[256]  (SS_SINGLE 1x256, from PreOp block)
  *   Port 13: graph_nel[256]  (SS_SINGLE 1x256, from PreOp block)
  *   Port 14: graph_adj[8192] (SS_UINT8  1x8192, from PreOp block)
+ *   Port 15: corner_eps      (SS_SINGLE scalar, waypoint offset from corners)
  *
  * OUTPUT PORTS:
  *   Port 0: az_next     (SS_SINGLE scalar, next AZ command)
@@ -59,10 +60,12 @@
 #define AVD_TGT_MOVE_THRESH     2.0f
 #define AVD_MAX_FIXED_NODES     (AVD_MAX_FORBIDDEN * AVD_CANDIDATES_PER_RECT) /* 256 */
 #define AVD_ADJ_BYTES           ((AVD_MAX_FIXED_NODES + 7) / 8)              /* 32  */
+#define AVD_OSC_THRESH          3    /* DIRECT<->WAYPOINT flips to trigger A* lock */
+#define AVD_LOCK_DURATION       50   /* lock duration in steps (50ms at 1ms rate)  */
 
 /* Output rate limit: max degrees (manhattan) the command can move from
  * the current turret position per call.  Tune to your turret's max
- * velocity × sample time.  Example: 30 deg/s turret, 1 ms step → 0.03.
+ * velocity x sample time.  Example: 30 deg/s turret, 1 ms step -> 0.03.
  * Set to 0 to disable rate limiting.                                     */
 #define AVD_MAX_STEP            0.0f
 
@@ -128,6 +131,10 @@ typedef struct {
     int              cached_status;
     int              cached_node;
     int              has_cached;
+    /* Anti-oscillation state */
+    int              last_status;   /* previous output status (-1=init)    */
+    int              osc_count;     /* consecutive DIRECT<->WAYPOINT flips */
+    int              astar_lock;    /* countdown: >0 means skip direct     */
 } AvdState;
 
 /* ================================================================
@@ -320,7 +327,7 @@ static int path_is_clear(avd_real p0az, avd_real p0el,
     case AVD_MOTION_EL_THEN_AZ:
         if (!segment_is_clear(p0az, p0el, p0az, p1el, f, az_wrap)) return 0;
         return segment_is_clear(p0az, p1el, p1az, p1el, f, az_wrap);
-    default: /* AVD_MOTION_LINEAR — only check diagonal */
+    default: /* AVD_MOTION_LINEAR -- only check diagonal */
         return segment_is_clear(p0az, p0el, p1az, p1el, f, az_wrap);
     }
 }
@@ -339,7 +346,7 @@ static int adj_get(const unsigned char adj[][AVD_ADJ_BYTES], int i, int j)
 static void project_target(avd_real *taz, avd_real *tel,
                            const AvdRect *f,
                            const AvdRect *env,
-                           int az_wrap)
+                           int az_wrap, avd_real eps)
 {
     int i;
     for (i = 0; i < AVD_MAX_FORBIDDEN; i++) {
@@ -350,20 +357,20 @@ static void project_target(avd_real *taz, avd_real *tel,
         avd_real proj_az[4], proj_el[4];
 
         d[0] = avd_abs(*taz - f[i].az_min);
-        proj_az[0] = f[i].az_min - AVD_CORNER_EPS;
+        proj_az[0] = f[i].az_min - eps;
         proj_el[0] = *tel;
 
         d[1] = avd_abs(*taz - f[i].az_max);
-        proj_az[1] = f[i].az_max + AVD_CORNER_EPS;
+        proj_az[1] = f[i].az_max + eps;
         proj_el[1] = *tel;
 
         d[2] = avd_abs(*tel - f[i].el_min);
         proj_az[2] = *taz;
-        proj_el[2] = f[i].el_min - AVD_CORNER_EPS;
+        proj_el[2] = f[i].el_min - eps;
 
         d[3] = avd_abs(*tel - f[i].el_max);
         proj_az[3] = *taz;
-        proj_el[3] = f[i].el_max + AVD_CORNER_EPS;
+        proj_el[3] = f[i].el_max + eps;
 
         {
             int best = 0, k;
@@ -386,7 +393,7 @@ static void project_target(avd_real *taz, avd_real *tel,
 static int try_escape(avd_real cur_az, avd_real cur_el,
                       const AvdRect *f,
                       const AvdRect *env,
-                      int az_wrap,
+                      int az_wrap, avd_real eps,
                       AvdOutput *out)
 {
     int i;
@@ -399,16 +406,16 @@ static int try_escape(avd_real cur_az, avd_real cur_el,
             int order[4] = {0, 1, 2, 3};
             int j, k;
 
-            cand_az[0] = f[i].az_min - AVD_CORNER_EPS;  cand_el[0] = cur_el;
+            cand_az[0] = f[i].az_min - eps;  cand_el[0] = cur_el;
             cand_d[0]  = avd_abs(cur_az - f[i].az_min);
 
-            cand_az[1] = f[i].az_max + AVD_CORNER_EPS;  cand_el[1] = cur_el;
+            cand_az[1] = f[i].az_max + eps;  cand_el[1] = cur_el;
             cand_d[1]  = avd_abs(cur_az - f[i].az_max);
 
-            cand_az[2] = cur_az;  cand_el[2] = f[i].el_min - AVD_CORNER_EPS;
+            cand_az[2] = cur_az;  cand_el[2] = f[i].el_min - eps;
             cand_d[2]  = avd_abs(cur_el - f[i].el_min);
 
-            cand_az[3] = cur_az;  cand_el[3] = f[i].el_max + AVD_CORNER_EPS;
+            cand_az[3] = cur_az;  cand_el[3] = f[i].el_max + eps;
             cand_d[3]  = avd_abs(cur_el - f[i].el_max);
 
             /* Sort by distance (insertion sort, 4 elements) */
@@ -587,7 +594,32 @@ static int astar_on_graph(int src_idx, int dst_idx,
 }
 
 /* ================================================================
- *  Avoidance_Init  —  Reset state at t=0
+ *  ANTI-OSCILLATION HELPER
+ *
+ *  Detects rapid DIRECT<->WAYPOINT status flips.  After
+ *  AVD_OSC_THRESH consecutive flips, locks into A* mode for
+ *  AVD_LOCK_DURATION steps to break the oscillation cycle.
+ * ================================================================ */
+static void avd_update_osc(AvdState *state, int cur_status)
+{
+    if (state->last_status >= 0) {
+        int is_flip = ((state->last_status == AVD_OK_DIRECT  && cur_status == AVD_OK_WAYPOINT) ||
+                       (state->last_status == AVD_OK_WAYPOINT && cur_status == AVD_OK_DIRECT));
+        if (is_flip) {
+            state->osc_count++;
+            if (state->osc_count >= AVD_OSC_THRESH) {
+                state->astar_lock = AVD_LOCK_DURATION;
+                state->osc_count  = 0;
+            }
+        } else {
+            state->osc_count = 0;
+        }
+    }
+    state->last_status = cur_status;
+}
+
+/* ================================================================
+ *  Avoidance_Init  --  Reset state at t=0
  * ================================================================ */
 static void Avoidance_Init(AvdState *state, AvdMotionProfile profile,
                            int az_wrap)
@@ -599,14 +631,17 @@ static void Avoidance_Init(AvdState *state, AvdMotionProfile profile,
     state->path_valid  = 0;
     state->path_tgt_az = 0.0f;
     state->path_tgt_el = 0.0f;
+    state->last_status = -1;
+    state->osc_count   = 0;
+    state->astar_lock  = 0;
 }
 
 /* ================================================================
- *  Avoidance_Step  —  One planning cycle (called every 1 ms)
+ *  Avoidance_Step  --  One planning cycle (called every 1 ms)
  *  5-step algorithm: escape, project, direct, A* path, no-path
  * ================================================================ */
 static AvdOutput Avoidance_Step(const AvdInput *in, AvdState *state,
-                                const AvdGraph *graph)
+                                const AvdGraph *graph, avd_real corner_eps)
 {
     AvdOutput out;
     const AvdRect *env = &in->envelope;
@@ -618,9 +653,14 @@ static AvdOutput Avoidance_Step(const AvdInput *in, AvdState *state,
     avd_real cur_el = in->el_now;
     avd_real tgt_az, tgt_el;
 
+    /* Anti-oscillation: decrement lock timer */
+    if (state->astar_lock > 0)
+        state->astar_lock--;
+
     /* Step 1: Escape if currently inside a forbidden zone */
-    if (try_escape(cur_az, cur_el, f, env, wrap, &out)) {
+    if (try_escape(cur_az, cur_el, f, env, wrap, corner_eps, &out)) {
         state->path_valid = 0;
+        avd_update_osc(state, (int)out.status);
         return out;
     }
 
@@ -629,14 +669,16 @@ static AvdOutput Avoidance_Step(const AvdInput *in, AvdState *state,
     tgt_el = avd_clamp(in->el_cmd, env->el_min, env->el_max);
     if (wrap) tgt_az = avd_normalize_az(tgt_az);
 
-    project_target(&tgt_az, &tgt_el, f, env, wrap);
+    project_target(&tgt_az, &tgt_el, f, env, wrap, corner_eps);
 
     /* Step 3: Direct path clear -> OK_DIRECT */
-    if (path_is_clear(cur_az, cur_el, tgt_az, tgt_el, f, prof, wrap)) {
+    if (state->astar_lock <= 0 &&
+        path_is_clear(cur_az, cur_el, tgt_az, tgt_el, f, prof, wrap)) {
         out.az_next   = tgt_az;
         out.el_next   = tgt_el;
         out.status    = AVD_OK_DIRECT;
         state->path_valid = 0;
+        avd_update_osc(state, AVD_OK_DIRECT);
         return out;
     }
 
@@ -657,8 +699,21 @@ static AvdOutput Avoidance_Step(const AvdInput *in, AvdState *state,
         int dst = nearest_reachable_node(tgt_az, tgt_el, graph, f, prof, wrap);
         int plen = astar_on_graph(src, dst, graph, wrap,
                                    state->path_az, state->path_el,
-                                   AVD_MAX_PATH_LEN);
+                                   AVD_MAX_PATH_LEN - 1);
         if (plen > 0) {
+            /* Prepend src node: A* excludes it but the servo must
+               first reach the nearest reachable graph node before
+               following graph edges.  cur_pos->src is guaranteed
+               clear by nearest_reachable_node. */
+            int k;
+            for (k = plen; k > 0; k--) {
+                state->path_az[k] = state->path_az[k - 1];
+                state->path_el[k] = state->path_el[k - 1];
+            }
+            state->path_az[0] = graph->naz[src];
+            state->path_el[0] = graph->nel[src];
+            plen++;
+
             state->path_len    = plen;
             state->path_idx    = 0;
             state->path_valid  = 1;
@@ -685,12 +740,14 @@ static AvdOutput Avoidance_Step(const AvdInput *in, AvdState *state,
 
         if (state->path_valid && state->path_idx < state->path_len) {
             /* Shortcut: try direct to target */
-            if (path_is_clear(cur_az, cur_el, tgt_az, tgt_el,
+            if (state->astar_lock <= 0 &&
+                path_is_clear(cur_az, cur_el, tgt_az, tgt_el,
                               f, prof, wrap)) {
                 out.az_next   = tgt_az;
                 out.el_next   = tgt_el;
                 out.status    = AVD_OK_DIRECT;
                 state->path_valid = 0;
+                avd_update_osc(state, AVD_OK_DIRECT);
                 return out;
             }
 
@@ -701,6 +758,7 @@ static AvdOutput Avoidance_Step(const AvdInput *in, AvdState *state,
                 out.az_next = wp_az;
                 out.el_next = wp_el;
                 out.status  = AVD_OK_WAYPOINT;
+                avd_update_osc(state, AVD_OK_WAYPOINT);
                 return out;
             }
 
@@ -714,8 +772,18 @@ static AvdOutput Avoidance_Step(const AvdInput *in, AvdState *state,
         int dst = nearest_reachable_node(tgt_az, tgt_el, graph, f, prof, wrap);
         int plen = astar_on_graph(src, dst, graph, wrap,
                                    state->path_az, state->path_el,
-                                   AVD_MAX_PATH_LEN);
+                                   AVD_MAX_PATH_LEN - 1);
         if (plen > 0) {
+            /* Prepend src node (same as step 4b) */
+            int k;
+            for (k = plen; k > 0; k--) {
+                state->path_az[k] = state->path_az[k - 1];
+                state->path_el[k] = state->path_el[k - 1];
+            }
+            state->path_az[0] = graph->naz[src];
+            state->path_el[0] = graph->nel[src];
+            plen++;
+
             state->path_len    = plen;
             state->path_idx    = 0;
             state->path_valid  = 1;
@@ -725,15 +793,17 @@ static AvdOutput Avoidance_Step(const AvdInput *in, AvdState *state,
             out.az_next = state->path_az[0];
             out.el_next = state->path_el[0];
             out.status  = AVD_OK_WAYPOINT;
+            avd_update_osc(state, AVD_OK_WAYPOINT);
             return out;
         }
     }
 
-    /* Step 5: No path found — hold position */
+    /* Step 5: No path found -- hold position */
     out.az_next = cur_az;
     out.el_next = cur_el;
     out.status  = AVD_NO_PATH;
     state->path_valid = 0;
+    avd_update_osc(state, AVD_NO_PATH);
     return out;
 }
 
@@ -741,7 +811,7 @@ static AvdOutput Avoidance_Step(const AvdInput *in, AvdState *state,
  *  S-FUNCTION METHODS
  * ================================================================ */
 
-#define NUM_INPUTS   15
+#define NUM_INPUTS   16
 #define NUM_OUTPUTS  4
 #define FZONE_ROWS   32
 #define FZONE_COLS   5
@@ -820,6 +890,12 @@ static void mdlInitializeSizes(SimStruct *S)
     ssSetInputPortDataType(S, 14, SS_UINT8);
     ssSetInputPortRequiredContiguous(S, 14, 1);
 
+    /* Port 15: corner_eps (SS_SINGLE scalar) */
+    ssSetInputPortWidth(S, 15, 1);
+    ssSetInputPortDirectFeedThrough(S, 15, 1);
+    ssSetInputPortDataType(S, 15, SS_SINGLE);
+    ssSetInputPortRequiredContiguous(S, 15, 1);
+
     /* === Output Ports === */
     if (!ssSetNumOutputPorts(S, NUM_OUTPUTS)) return;
 
@@ -886,6 +962,7 @@ static void mdlOutputs(SimStruct *S, int_T tid)
     AvdInput  in_data;
     AvdGraph  graph;
     AvdOutput out;
+    avd_real  corner_eps;
 
     AvdState *state = (AvdState *)ssGetDWork(S, DWORK_STATE);
 
@@ -1012,10 +1089,16 @@ static void mdlOutputs(SimStruct *S, int_T tid)
         }
     }
 
+    /* Port 15: corner_eps */
+    {
+        const real32_T *p15 = (const real32_T *)ssGetInputPortSignal(S, 15);
+        corner_eps = p15[0];
+    }
+
     /* ============================================================
      *  CALL Avoidance_Step
      * ============================================================ */
-    out = Avoidance_Step(&in_data, state, &graph);
+    out = Avoidance_Step(&in_data, state, &graph, corner_eps);
 
     /* Find target node index for debug output */
     {
@@ -1039,7 +1122,7 @@ static void mdlOutputs(SimStruct *S, int_T tid)
      *  This is equivalent to the C test's move_toward() function:
      *  it shapes the raw waypoint into a reachable next position.
      *
-     *  Tune AVD_MAX_STEP to your turret's max_velocity × sample_time.
+     *  Tune AVD_MAX_STEP to your turret's max_velocity x sample_time.
      * ============================================================ */
     if (AVD_MAX_STEP > 0.0f && out.status != AVD_NO_PATH) {
         avd_real daz = out.az_next - in_data.az_now;
